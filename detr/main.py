@@ -30,6 +30,8 @@ def get_args_parser():
                         help="Type of positional embedding to use on top of the image features")
     parser.add_argument('--camera_names', default=[], type=list, # will be overridden
                         help="A list of camera names")
+    parser.add_argument('--image_channels', default=3, type=int, # will be overridden
+                        help="Number of image input channels (ACT uses 3 for RGB or 4 for RGB+mask)")
 
     # * Transformer
     parser.add_argument('--enc_layers', default=4, type=int, # will be overridden
@@ -119,4 +121,3 @@ def build_CNNMLP_model_and_optimizer(args_override):
                                   weight_decay=args.weight_decay)
 
     return model, optimizer
-

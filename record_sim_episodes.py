@@ -9,6 +9,7 @@ from constants import PUPPET_GRIPPER_POSITION_NORMALIZE_FN, SIM_TASK_CONFIGS, lo
 from ee_sim_env import make_ee_sim_env
 from sim_env import make_sim_env, BOX_POSE
 from scripted_policy import PickAndTransferPolicy, InsertionPolicy, LiftingAndMovingPolicy, ExcavatorMocapLiftingPolicy
+from utils import build_oracle_static_mask_dict
 
 import IPython
 e = IPython.embed
@@ -134,6 +135,7 @@ def main(args):
         # 将物体初始位姿同步到 sim_env
         BOX_POSE[0] = subtask_info # make sure the sim_env has the same object configurations as ee_sim_env
         ts = env.reset()
+        static_mask_dict = build_oracle_static_mask_dict(env._physics, camera_names, task_name)
 
         episode_replay = [ts]
         # setup plotting
@@ -180,6 +182,7 @@ def main(args):
         }
         for cam_name in camera_names:
             data_dict[f'/observations/images/{cam_name}'] = []
+            data_dict[f'/observations/static_masks/{cam_name}'] = static_mask_dict[cam_name].astype(np.uint8)
 
         # 因为重放会多出 1 个动作与 1 个时间步，这里截断保持一致
         joint_traj = joint_traj[:-1]
@@ -205,9 +208,11 @@ def main(args):
             root.attrs['sim'] = True
             obs = root.create_group('observations')
             image = obs.create_group('images')
+            static_masks = obs.create_group('static_masks')
             for cam_name in camera_names:
                 _ = image.create_dataset(cam_name, (max_timesteps, 480, 640, 3), dtype='uint8',
                                          chunks=(1, 480, 640, 3), )
+                _ = static_masks.create_dataset(cam_name, (480, 640), dtype='uint8')
             # compression='gzip',compression_opts=2,)
             # compression=32001, compression_opts=(0, 0, 0, 0, 9, 1, 1), shuffle=False)
             qpos = obs.create_dataset('qpos', (max_timesteps, state_dim))
@@ -228,4 +233,3 @@ if __name__ == '__main__':
     args = parser.parse_args()
     
     main(vars(args))
-

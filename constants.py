@@ -43,6 +43,10 @@ def get_training_config(config_path):
         act = config.get('act', {})
         output = config.get('output', {})
         eval_config = config.get('eval', {})
+        vipact = config.get('vipact', {})
+
+        use_mask_conditioning = bool(vipact.get('use_mask_conditioning', False))
+        image_channels = 4 if use_mask_conditioning else 3
         
         return {
             'policy_class': training.get('policy_class', 'ACT'),
@@ -58,6 +62,8 @@ def get_training_config(config_path):
             'ckpt_dir': output.get('ckpt_dir', './ckpts'),
             'eval': eval_config.get('enabled', False),
             'clear_videos_before_eval': eval_config.get('clear_videos_before_eval', True),
+            'use_mask_conditioning': use_mask_conditioning,
+            'image_channels': image_channels,
         }
     return {}
 

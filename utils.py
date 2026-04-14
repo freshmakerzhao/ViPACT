@@ -2,18 +2,64 @@ import numpy as np
 import torch
 import os
 import h5py
+import mujoco
+import random
 from torch.utils.data import TensorDataset, DataLoader
 
 import IPython
 e = IPython.embed
 
+def get_target_geom_names(task_name):
+    if 'sim_transfer_cube' in task_name:
+        return ['red_box']
+    if 'sim_lifting_cube' in task_name:
+        return ['red_box']
+    if 'sim_insertion' in task_name:
+        return ['red_peg']
+    raise NotImplementedError(f'No target geom mapping for task_name={task_name}')
+
+
+def build_oracle_static_mask_dict(physics, camera_names, task_name, height=480, width=640):
+    """Build per-camera static masks from MuJoCo segmentation (oracle)."""
+    target_geom_ids = []
+    for geom_name in get_target_geom_names(task_name):
+        try:
+            target_geom_ids.append(physics.model.name2id(geom_name, 'geom'))
+        except (KeyError, ValueError):
+            continue
+    if len(target_geom_ids) == 0:
+        raise ValueError(f'No valid target geom id found for task_name={task_name}')
+    target_geom_ids = np.array(target_geom_ids, dtype=np.int32)
+    geom_type = int(mujoco.mjtObj.mjOBJ_GEOM)
+
+    static_mask_dict = {}
+    for cam_name in camera_names:
+        segmentation = physics.render(
+            height=height, width=width, camera_id=cam_name, segmentation=True
+        )
+        # dm_control segmentation format: [..., 0]=objid, [..., 1]=objtype
+        objid = segmentation[..., 0]
+        objtype = segmentation[..., 1]
+        mask = np.isin(objid, target_geom_ids) & (objtype == geom_type)
+        mask = mask.astype(np.float32)
+        if mask.sum() < 1:
+            raise RuntimeError(
+                f'Oracle mask is empty for camera={cam_name}, task={task_name}. '
+                'Please verify target visibility or camera selection.'
+            )
+        static_mask_dict[cam_name] = mask
+
+    return static_mask_dict
+
+
 class EpisodicDataset(torch.utils.data.Dataset):
-    def __init__(self, episode_ids, dataset_dir, camera_names, norm_stats):
+    def __init__(self, episode_ids, dataset_dir, camera_names, norm_stats, use_mask_conditioning=False):
         super(EpisodicDataset).__init__()
         self.episode_ids = episode_ids
         self.dataset_dir = dataset_dir
         self.camera_names = camera_names
         self.norm_stats = norm_stats
+        self.use_mask_conditioning = use_mask_conditioning # 是否使用掩码条件，掩码在整个episode中保持静态（即使动作和qpos在变化），以提供对物体位置的持续感知
         self.is_sim = None
         self.__getitem__(0) # initialize self.is_sim
 
@@ -37,8 +83,24 @@ class EpisodicDataset(torch.utils.data.Dataset):
             qpos = root['/observations/qpos'][start_ts]
             qvel = root['/observations/qvel'][start_ts]
             image_dict = dict()
+            static_mask_dict = dict()
+            has_oracle_static_masks = (
+                'observations' in root and
+                'static_masks' in root['observations']
+            )
+            if self.use_mask_conditioning and not has_oracle_static_masks:
+                raise KeyError(
+                    f'Dataset {dataset_path} is missing /observations/static_masks. '
+                    'Please regenerate dataset with record_sim_episodes.py to use oracle masks.'
+                )
             for cam_name in self.camera_names:
                 image_dict[cam_name] = root[f'/observations/images/{cam_name}'][start_ts]
+                if self.use_mask_conditioning:
+                    if cam_name not in root['/observations/static_masks']:
+                        raise KeyError(
+                            f'Dataset {dataset_path} has no static mask for camera {cam_name}'
+                        )
+                    static_mask_dict[cam_name] = root[f'/observations/static_masks/{cam_name}'][()]
             # get all actions after and including start_ts
             if is_sim:
                 action = root['/action'][start_ts:]
@@ -58,6 +120,12 @@ class EpisodicDataset(torch.utils.data.Dataset):
         for cam_name in self.camera_names:
             all_cam_images.append(image_dict[cam_name])
         all_cam_images = np.stack(all_cam_images, axis=0)
+        # 生成静态掩码字典，并为每个摄像头构建掩码列表
+        if self.use_mask_conditioning:
+            all_cam_masks = []
+            for cam_name in self.camera_names:
+                all_cam_masks.append(static_mask_dict[cam_name])
+            all_cam_masks = np.stack(all_cam_masks, axis=0)
 
         # construct observations
         image_data = torch.from_numpy(all_cam_images)
@@ -69,7 +137,11 @@ class EpisodicDataset(torch.utils.data.Dataset):
         image_data = torch.einsum('k h w c -> k c h w', image_data)
 
         # normalize image and change dtype to float
-        image_data = image_data / 255.0
+        image_data = image_data.float() / 255.0
+        # 将掩码作为额外的通道连接到图像数据中
+        if self.use_mask_conditioning:
+            mask_data = torch.from_numpy(all_cam_masks).float().unsqueeze(1)
+            image_data = torch.cat([image_data, mask_data], dim=1)
         action_data = (action_data - self.norm_stats["action_mean"]) / self.norm_stats["action_std"]
         qpos_data = (qpos_data - self.norm_stats["qpos_mean"]) / self.norm_stats["qpos_std"]
 
@@ -108,7 +180,7 @@ def get_norm_stats(dataset_dir, num_episodes):
     return stats
 
 
-def load_data(dataset_dir, num_episodes, camera_names, batch_size_train, batch_size_val):
+def load_data(dataset_dir, num_episodes, camera_names, batch_size_train, batch_size_val, use_mask_conditioning=False):
     print(f'\nData from: {dataset_dir}\n')
     # obtain train test split
     train_ratio = 0.8
@@ -120,8 +192,12 @@ def load_data(dataset_dir, num_episodes, camera_names, batch_size_train, batch_s
     norm_stats = get_norm_stats(dataset_dir, num_episodes)
 
     # construct dataset and dataloader
-    train_dataset = EpisodicDataset(train_indices, dataset_dir, camera_names, norm_stats)
-    val_dataset = EpisodicDataset(val_indices, dataset_dir, camera_names, norm_stats)
+    train_dataset = EpisodicDataset(
+        train_indices, dataset_dir, camera_names, norm_stats, use_mask_conditioning=use_mask_conditioning
+    )
+    val_dataset = EpisodicDataset(
+        val_indices, dataset_dir, camera_names, norm_stats, use_mask_conditioning=use_mask_conditioning
+    )
     train_dataloader = DataLoader(train_dataset, batch_size=batch_size_train, shuffle=True, pin_memory=True, num_workers=1, prefetch_factor=1)
     val_dataloader = DataLoader(val_dataset, batch_size=batch_size_val, shuffle=True, pin_memory=True, num_workers=1, prefetch_factor=1)
 
@@ -228,5 +304,14 @@ def detach_dict(d):
     return new_d
 
 def set_seed(seed):
+    random.seed(seed)
     torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    try:
+        torch.use_deterministic_algorithms(True)
+    except Exception:
+        pass
     np.random.seed(seed)

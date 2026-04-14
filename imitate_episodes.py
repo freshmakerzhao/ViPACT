@@ -12,7 +12,7 @@ from tqdm import tqdm
 from einops import rearrange
 
 from constants import DT, PUPPET_GRIPPER_JOINT_OPEN, load_config, get_training_config, get_equipment_model, get_sim_task_config
-from utils import load_data # data functions
+from utils import load_data, build_oracle_static_mask_dict # data functions
 from utils import sample_box_pose, sample_box_pose_eval, sample_box_pose_for_excavator, sample_insertion_pose # robot functions
 from utils import compute_dict_mean, set_seed, detach_dict # helper functions
 from policy import ACTPolicy, CNNMLPPolicy
@@ -47,6 +47,8 @@ def main(args):
     clear_videos_before_eval = training_config.get('clear_videos_before_eval', True) # 默认清除
     equipment_model = get_equipment_model(config_path)
     seed = training_config.get('seed', 1000)
+    use_mask_conditioning = training_config.get('use_mask_conditioning', False)
+    image_channels = 4 if use_mask_conditioning else 3
     # get task parameters
     is_sim = task_name[:4] == 'sim_'
     if is_sim:
@@ -87,6 +89,9 @@ def main(args):
                          'camera_names': camera_names,
                          'equipment_model': equipment_model,
                          }
+        if use_mask_conditioning:
+            policy_config['use_mask_conditioning'] = True
+            policy_config['image_channels'] = image_channels
     elif policy_class == 'CNNMLP':
         policy_config = {'lr': float(training_config.get('lr', 1e-5)), 'lr_backbone': lr_backbone, 'backbone' : backbone, 'num_queries': 1,
                          'camera_names': camera_names,}
@@ -107,6 +112,8 @@ def main(args):
         'temporal_agg': training_config.get('temporal_agg', False),
         'camera_names': camera_names,
         'real_robot': not is_sim,
+        'use_mask_conditioning': use_mask_conditioning,
+        'image_channels': image_channels,
     }
     if is_eval:
         if clear_videos_before_eval:
@@ -122,7 +129,14 @@ def main(args):
         print()
         exit()
 
-    train_dataloader, val_dataloader, stats, _ = load_data(dataset_dir, num_episodes, camera_names, batch_size_train, batch_size_val)
+    train_dataloader, val_dataloader, stats, _ = load_data(
+        dataset_dir,
+        num_episodes,
+        camera_names,
+        batch_size_train,
+        batch_size_val,
+        use_mask_conditioning=use_mask_conditioning,
+    )
 
     # save dataset stats
     if not os.path.isdir(ckpt_dir):
@@ -160,13 +174,27 @@ def make_optimizer(policy_class, policy):
     return optimizer
 
 
-def get_image(ts, camera_names):
+def get_image(ts, camera_names, use_mask_conditioning=False, static_mask_dict=None):
+    if not use_mask_conditioning:
+        # Keep the original ACT RGB preprocessing path for strict backward-compatibility.
+        curr_images = []
+        for cam_name in camera_names:
+            curr_image = rearrange(ts.observation['images'][cam_name], 'h w c -> c h w')
+            curr_images.append(curr_image)
+        curr_image = np.stack(curr_images, axis=0)
+        curr_image = torch.from_numpy(curr_image / 255.0).float().cuda().unsqueeze(0)
+        return curr_image
+
     curr_images = []
     for cam_name in camera_names:
-        curr_image = rearrange(ts.observation['images'][cam_name], 'h w c -> c h w')
+        curr_image = rearrange(ts.observation['images'][cam_name], 'h w c -> c h w').astype(np.float32) / 255.0
+        if static_mask_dict is None or cam_name not in static_mask_dict:
+            raise ValueError(f'Missing static mask for camera {cam_name}')
+        static_mask = static_mask_dict[cam_name].astype(np.float32)
+        curr_image = np.concatenate([curr_image, np.expand_dims(static_mask, axis=0)], axis=0)
         curr_images.append(curr_image)
     curr_image = np.stack(curr_images, axis=0)
-    curr_image = torch.from_numpy(curr_image / 255.0).float().cuda().unsqueeze(0)
+    curr_image = torch.from_numpy(curr_image).float().cuda().unsqueeze(0)
     return curr_image
 
 
@@ -189,6 +217,7 @@ def eval_bc(config, ckpt_name, save_episode=True, equipment_model='vx300s_bimanu
     max_timesteps = config['episode_len']
     task_name = config['task_name']
     temporal_agg = config['temporal_agg']
+    use_mask_conditioning = config.get('use_mask_conditioning', False)
     onscreen_cam = 'angle'
 
     # load policy and stats
@@ -244,6 +273,9 @@ def eval_bc(config, ckpt_name, save_episode=True, equipment_model='vx300s_bimanu
             raise NotImplementedError
         init_pose = np.asarray(BOX_POSE[0], dtype=np.float64).copy()
         ts = env.reset()
+        static_mask_dict = None
+        if use_mask_conditioning:
+            static_mask_dict = build_oracle_static_mask_dict(env._physics, camera_names, task_name)
 
         ### onscreen render
         if onscreen_render:
@@ -278,7 +310,12 @@ def eval_bc(config, ckpt_name, save_episode=True, equipment_model='vx300s_bimanu
                 qpos = pre_process(qpos_numpy)
                 qpos = torch.from_numpy(qpos).float().cuda().unsqueeze(0)
                 qpos_history[:, t] = qpos
-                curr_image = get_image(ts, camera_names)
+                curr_image = get_image(
+                    ts,
+                    camera_names,
+                    use_mask_conditioning=use_mask_conditioning,
+                    static_mask_dict=static_mask_dict,
+                )
 
                 ### query policy
                 if config['policy_class'] == "ACT":
