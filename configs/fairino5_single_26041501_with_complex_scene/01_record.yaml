@@ -1,0 +1,16 @@
+# ==================== 任务配置 ====================
+task:
+  name: sim_lifting_cube_with_complex_scene_scripted
+  dataset_dir: ./data_sim_episodes/26041501_with_complex_scene
+  num_episodes: 50
+  episode_len: 400
+  camera_names:
+    - top
+    - cockpit
+# ==================== 设备配置 ====================
+equipment:
+  model: fairino5_single
+
+# ==================== 渲染配置 ====================
+render:
+  onscreen_render: false

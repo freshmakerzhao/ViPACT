@@ -229,6 +229,56 @@ def sample_box_pose_eval():
     cube_quat = np.array([1, 0, 0, 0])
     return np.concatenate([cube_position, cube_quat])
 
+# 生成复杂场景的目标和干扰物位姿，确保它们之间有足够的距离以避免重叠
+def _sample_cube_pose_from_range(x_range, y_range, z_range):
+    ranges = np.vstack([x_range, y_range, z_range])
+    cube_position = np.random.uniform(ranges[:, 0], ranges[:, 1])
+    cube_quat = np.array([1, 0, 0, 0])
+    return np.concatenate([cube_position, cube_quat])
+
+# 在复杂场景中采样目标和干扰物位姿，确保它们之间有足够的距离以避免重叠
+def _sample_non_overlapping_cube_pose(existing_xyz_list, x_range, y_range, z_range, min_dist=0.07, max_trials=2000):
+    for _ in range(max_trials):
+        pose = _sample_cube_pose_from_range(x_range, y_range, z_range)
+        xyz = pose[:3]
+        if all(np.linalg.norm(xyz - prev_xyz) >= min_dist for prev_xyz in existing_xyz_list):
+            return pose
+    raise RuntimeError('Failed to sample non-overlapping cube pose in complex scene')
+
+# 生成复杂场景的目标和干扰物位姿，确保它们之间有足够的距离以避免重叠
+def sample_complex_scene_pose():
+    """Sample target + 3 distractor cube poses for complex lifting scene.
+
+    Return shape: (28,) = 4 boxes * (xyz + quat).
+    Order is fixed to keep scripted policy and replay logic aligned:
+    [red_box, distractor_box_1, distractor_box_2, distractor_box_3].
+    """
+    target_pose = sample_box_pose()
+
+    distractor_x_range = [-0.12, 0.32]
+    distractor_y_range = [0.38, 0.70]
+    z_range = [0.05, 0.05]
+
+    xyz_list = [target_pose[:3]]
+    distractors = []
+    for _ in range(3):
+        d_pose = _sample_non_overlapping_cube_pose(
+            xyz_list,
+            distractor_x_range,
+            distractor_y_range,
+            z_range,
+            min_dist=0.07,
+        )
+        distractors.append(d_pose)
+        xyz_list.append(d_pose[:3])
+
+    return np.concatenate([target_pose] + distractors)
+
+# 评估时的复杂场景采样，保持与训练分布一致
+def sample_complex_scene_pose_eval():
+    # Keep eval distribution aligned with train for current MVP.
+    return sample_complex_scene_pose()
+
 
 def sample_box_pose_eval_ring():
     outer_x_range = [-0.1, 0.3]

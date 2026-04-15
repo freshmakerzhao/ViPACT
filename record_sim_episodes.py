@@ -54,7 +54,7 @@ def main(args):
         policy_cls = PickAndTransferPolicy
     elif task_name == 'sim_insertion_scripted':
         policy_cls = InsertionPolicy
-    elif task_name == 'sim_lifting_cube_scripted':
+    elif 'sim_lifting_cube' in task_name:
         if equipment_model == 'excavator_simple':
             policy_cls = ExcavatorMocapLiftingPolicy
         else:

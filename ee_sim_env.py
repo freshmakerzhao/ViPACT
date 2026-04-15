@@ -11,7 +11,7 @@ from constants import PUPPET_GRIPPER_VELOCITY_NORMALIZE_FN
 
 from constants import EXCAVATOR_MAIN_JOINTS, EXCAVATOR_START_POSE
 
-from utils import sample_box_pose, sample_insertion_pose, sample_box_pose_for_excavator
+from utils import sample_box_pose, sample_complex_scene_pose, sample_insertion_pose, sample_box_pose_for_excavator
 from dm_control import mujoco
 from dm_control.rl import control
 from dm_control.suite import base
@@ -52,13 +52,28 @@ def make_ee_sim_env(task_name, equipment_model: str = 'vx300s_bimanual'):
         env = control.Environment(physics, task, time_limit=20, control_timestep=DT,
                                   n_sub_steps=None, flat_observation=False)
     elif "sim_lifting_cube" in task_name:
-        xml_path = os.path.join(XML_DIR, equipment_model, 'single_viperx_ee_transfer_cube.xml')
+        if equipment_model == "excavator_simple":
+            xml_filename = 'single_viperx_ee_transfer_cube.xml'
+        elif 'fairino5_single' in equipment_model:
+            if 'with_complex_scene' in task_name:
+                xml_filename = 'fairino_fr5_ee_lifting_cube_with_complex_scene.xml'
+            else:
+                xml_filename = 'fairino_fr5_ee_lifting_cube.xml'
+        else:
+            xml_filename = 'single_viperx_ee_transfer_cube.xml'
+        xml_path = os.path.join(XML_DIR, equipment_model, xml_filename)
         physics = mujoco.Physics.from_xml_path(xml_path) # 加载物理引擎，其能够读取关节位置、推进一个step、渲染图像
         # Todo 临时增加一个挖掘机的class,后续合并进来
+        use_complex_scene = 'with_complex_scene' in task_name
         if equipment_model == "excavator_simple":
             task = ExcavatorSimpleLiftingCubeEETask(random=False, arm_nums=1, equipment_model=equipment_model)
         else:
-            task = LiftingCubeEETask(random=False, arm_nums=1, equipment_model=equipment_model) # 任务对象，初始化基本任务设置、奖励函数、观测数据提取
+            task = LiftingCubeEETask(
+                random=False,
+                arm_nums=1,
+                equipment_model=equipment_model,
+                use_complex_scene=use_complex_scene,
+            ) # 任务对象，初始化基本任务设置、奖励函数、观测数据提取
         env = control.Environment(physics, task, time_limit=20, control_timestep=DT,
                                   n_sub_steps=None, flat_observation=False)
     else:
@@ -277,6 +292,7 @@ class BimanualViperXEETask(base.Task):
         obs['images']['top'] = physics.render(height=480, width=640, camera_id='top')
         obs['images']['angle'] = physics.render(height=480, width=640, camera_id='angle')
         obs['images']['vis'] = physics.render(height=480, width=640, camera_id='front_close')
+        obs['images']['cockpit'] = physics.render(height=480, width=640, camera_id='cockpit')
         # obs['images']['right_pillar'] = physics.render(height=480, width=640, camera_id='right_pillar')
         if self.arm_nums == 2:
             # used in scripted policy to obtain starting pose
@@ -407,18 +423,48 @@ class ExcavatorSimpleLiftingCubeEETask(BimanualViperXEETask):
         return reward
 
 class LiftingCubeEETask(BimanualViperXEETask):
-    def __init__(self, random=None, arm_nums=1, equipment_model='vx300s_single'):
+    def __init__(self, random=None, arm_nums=1, equipment_model='vx300s_single', use_complex_scene=False):
         super().__init__(random=random, arm_nums=arm_nums, equipment_model=equipment_model)
         self.max_reward = 4
+        # False: 原始单目标方块场景（只随机 red_box）
+        # True : 复杂场景（随机 red_box + 3 个干扰方块）
+        self.use_complex_scene = use_complex_scene
 
     def initialize_episode(self, physics):
         """Sets the state of the environment at the start of each episode."""
+        # 先把机器人本体复位到标准初始姿态
         self.initialize_robots(physics)
-        # randomize box position
-        cube_pose = sample_box_pose()
-        box_start_idx = physics.model.name2id('red_box_joint', 'joint') # 根据名字找到box的索引
-        np.copyto(physics.data.qpos[box_start_idx : box_start_idx + 7], cube_pose)
-        # print(f"randomized cube position to {cube_position}")
+        # 再随机场景中物体的位置（而不是使用 XML 中写死的位置）
+        if self.use_complex_scene:
+            # flat_scene_pose shape = (28,) = 4 * (xyz + quat)
+            # 固定顺序:
+            # [red_box, distractor_box_1, distractor_box_2, distractor_box_3]
+            flat_scene_pose = sample_complex_scene_pose()
+            joint_names = [
+                'red_box_joint',
+                'distractor_box_1_joint',
+                'distractor_box_2_joint',
+                'distractor_box_3_joint',
+            ]
+            for i, joint_name in enumerate(joint_names):
+                # 每个物体占 7 维: [x, y, z, qw, qx, qy, qz]
+                pose = flat_scene_pose[i * 7:(i + 1) * 7]
+                try:
+                    joint_id = physics.model.name2id(joint_name, 'joint')
+                except (KeyError, ValueError):
+                    # 某些 XML 可能不包含全部干扰物，允许跳过非目标物体
+                    continue
+                # name2id 返回的是 joint id，不是 qpos 下标；
+                # 需要通过 jnt_qposadr 映射到 qpos 起始索引
+                joint_qpos_start = int(physics.model.jnt_qposadr[joint_id])
+                np.copyto(physics.data.qpos[joint_qpos_start:joint_qpos_start + 7], pose)
+        else:
+            # 原始任务：只随机目标方块 red_box
+            cube_pose = sample_box_pose()
+            box_joint_id = physics.model.name2id('red_box_joint', 'joint')
+            box_start_idx = int(physics.model.jnt_qposadr[box_joint_id]) # 根据名字找到box在qpos中的起始索引
+            np.copyto(physics.data.qpos[box_start_idx : box_start_idx + 7], cube_pose)
+        # print(f"randomized object pose(s)")
 
         super().initialize_episode(physics)
 

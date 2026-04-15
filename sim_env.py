@@ -51,13 +51,19 @@ def make_sim_env(task_name, equipment_model: str = 'vx300s_bimanual'):
                                   n_sub_steps=None, flat_observation=False)
     elif 'sim_lifting_cube' in task_name:
         if equipment_model == 'excavator_simple':
-            xml_path = os.path.join(XML_DIR, equipment_model, 'single_viperx_transfer_cube.xml')
-            physics = mujoco.Physics.from_xml_path(xml_path)
+            xml_filename = 'single_viperx_transfer_cube.xml'
             task = ExcavatorSimpleLiftingCubeTask(random=False, equipment_model=equipment_model)
-        else:
-            xml_path = os.path.join(XML_DIR, equipment_model, 'single_viperx_transfer_cube.xml')
-            physics = mujoco.Physics.from_xml_path(xml_path)
+        elif 'fairino5_single' in equipment_model:
+            if 'with_complex_scene' in task_name:
+                xml_filename = 'fairino_fr5_lifting_cube_with_complex_scene.xml'
+            else:
+                xml_filename = 'fairino_fr5_lifting_cube.xml'
             task = LiftingCubeTask(random=False, equipment_model=equipment_model)
+        else:
+            xml_filename = 'single_viperx_transfer_cube.xml'
+            task = LiftingCubeTask(random=False, equipment_model=equipment_model)
+        xml_path = os.path.join(XML_DIR, equipment_model, xml_filename)
+        physics = mujoco.Physics.from_xml_path(xml_path)
         env = control.Environment(physics, task, time_limit=20, control_timestep=DT,
                                   n_sub_steps=None, flat_observation=False)
     else:
@@ -149,6 +155,7 @@ class BimanualViperXTask(base.Task):
         obs['images']['top'] = physics.render(height=480, width=640, camera_id='top')
         obs['images']['angle'] = physics.render(height=480, width=640, camera_id='angle')
         obs['images']['vis'] = physics.render(height=480, width=640, camera_id='front_close')
+        obs['images']['cockpit'] = physics.render(height=480, width=640, camera_id='cockpit')
         # obs['images']['right_pillar'] = physics.render(height=480, width=640, camera_id='right_pillar')
 
         return obs
@@ -293,7 +300,28 @@ class LiftingCubeTask(BimanualViperXTask):
             physics.named.data.qpos[:8] = start_pose
             np.copyto(physics.data.ctrl, start_pose)
             assert BOX_POSE[0] is not None
-            physics.named.data.qpos[-7:] = BOX_POSE[0]
+            flat_pose = np.asarray(BOX_POSE[0], dtype=np.float64).reshape(-1)
+            if flat_pose.size % 7 != 0:
+                raise ValueError(f'Unexpected BOX_POSE shape for lifting task: {flat_pose.shape}')
+            joint_names = ['red_box_joint']
+            if flat_pose.size >= 28:
+                joint_names.extend([
+                    'distractor_box_1_joint',
+                    'distractor_box_2_joint',
+                    'distractor_box_3_joint',
+                ])
+            pose_count = min(len(joint_names), flat_pose.size // 7)
+            for i in range(pose_count):
+                joint_name = joint_names[i]
+                pose = flat_pose[i * 7:(i + 1) * 7]
+                try:
+                    joint_id = physics.model.name2id(joint_name, 'joint')
+                except (KeyError, ValueError):
+                    if i == 0:
+                        raise
+                    continue
+                joint_qpos_start = int(physics.model.jnt_qposadr[joint_id])
+                physics.named.data.qpos[joint_qpos_start:joint_qpos_start + 7] = pose
             # print(f"{BOX_POSE=}")
         physics.forward()
         super().initialize_episode(physics)
@@ -384,6 +412,7 @@ class ExcavatorSimpleLiftingCubeTask(base.Task):
         obs['images']['top'] = physics.render(height=480, width=640, camera_id='top')
         obs['images']['angle'] = physics.render(height=480, width=640, camera_id='angle')
         obs['images']['vis'] = physics.render(height=480, width=640, camera_id='front_close')
+        obs['images']['cockpit'] = physics.render(height=480, width=640, camera_id='cockpit')
         return obs
 
     def get_reward(self, physics):
@@ -460,4 +489,3 @@ def test_sim_teleop():
 
 if __name__ == '__main__':
     test_sim_teleop()
-

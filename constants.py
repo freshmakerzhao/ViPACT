@@ -107,6 +107,12 @@ SIM_TASK_CONFIGS = {
         'episode_len': 400,
         'camera_names': ['top']
     },
+    'sim_lifting_cube_with_complex_scene_scripted':{
+        'dataset_dir': DATA_DIR + '/sim_lifting_cube_with_complex_scene_scripted',
+        'num_episodes': 50,
+        'episode_len': 400,
+        'camera_names': ['top']
+    },
 }
 
 def get_sim_task_config(task_name, config_path):

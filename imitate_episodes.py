@@ -13,7 +13,7 @@ from einops import rearrange
 
 from constants import DT, PUPPET_GRIPPER_JOINT_OPEN, load_config, get_training_config, get_equipment_model, get_sim_task_config
 from utils import load_data, build_oracle_static_mask_dict # data functions
-from utils import sample_box_pose, sample_box_pose_eval, sample_box_pose_for_excavator, sample_insertion_pose # robot functions
+from utils import sample_box_pose, sample_box_pose_eval, sample_box_pose_for_excavator, sample_complex_scene_pose_eval, sample_insertion_pose # robot functions
 from utils import compute_dict_mean, set_seed, detach_dict # helper functions
 from policy import ACTPolicy, CNNMLPPolicy
 from visualize_episodes import save_videos
@@ -44,7 +44,9 @@ def main(args):
     batch_size_train = training_config.get('batch_size', 32)
     batch_size_val = training_config.get('batch_size', 32)
     num_epochs = training_config.get('num_epochs', 2000)
-    clear_videos_before_eval = training_config.get('clear_videos_before_eval', True) # 默认清除
+    clear_videos_before_eval = training_config.get('clear_videos_before_eval', True) # 是否清除对应目录下的mp4视频，默认清除
+    mask_ablation = yaml_config.get('eval', {}).get('mask_ablation', 'oracle') # 验证时的mask消融方式，默认不消融（oracle），可选项包括移除（zero）和随机噪声（random）
+    eval_output_dir = yaml_config.get('eval', {}).get('output_dir', ckpt_dir) # 评估产物输出目录，默认与ckpt目录一致
     equipment_model = get_equipment_model(config_path)
     seed = training_config.get('seed', 1000)
     use_mask_conditioning = training_config.get('use_mask_conditioning', False)
@@ -114,10 +116,14 @@ def main(args):
         'real_robot': not is_sim,
         'use_mask_conditioning': use_mask_conditioning,
         'image_channels': image_channels,
+        'mask_ablation': mask_ablation,
+        'eval_output_dir': eval_output_dir,
     }
     if is_eval:
+        if not os.path.isdir(eval_output_dir):
+            os.makedirs(eval_output_dir, exist_ok=True)
         if clear_videos_before_eval:
-            clear_eval_videos(ckpt_dir)
+            clear_eval_videos(eval_output_dir)
         ckpt_names = [f'policy_best.ckpt']
         results = []
         for ckpt_name in ckpt_names:
@@ -198,6 +204,20 @@ def get_image(ts, camera_names, use_mask_conditioning=False, static_mask_dict=No
     return curr_image
 
 
+def apply_mask_ablation(static_mask_dict, mode, seed):
+    if mode == 'oracle':
+        return static_mask_dict
+    if mode == 'zero':
+        return {k: np.zeros_like(v, dtype=np.float32) for k, v in static_mask_dict.items()}
+    if mode == 'random':
+        rng = np.random.default_rng(seed)
+        return {
+            k: (rng.random(v.shape) > 0.5).astype(np.float32)
+            for k, v in static_mask_dict.items()
+        }
+    raise ValueError(f"Unsupported mask_ablation mode: {mode}. Expected one of ['oracle','zero','random'].")
+
+
 def clear_eval_videos(ckpt_dir):
     video_paths = glob.glob(os.path.join(ckpt_dir, 'video*.mp4'))
     for video_path in video_paths:
@@ -208,6 +228,7 @@ def clear_eval_videos(ckpt_dir):
 def eval_bc(config, ckpt_name, save_episode=True, equipment_model='vx300s_bimanual'):
     set_seed(config['seed'])
     ckpt_dir = config['ckpt_dir']
+    eval_output_dir = config.get('eval_output_dir', ckpt_dir)
     state_dim = config['state_dim']
     real_robot = config['real_robot']
     policy_class = config['policy_class']
@@ -218,6 +239,7 @@ def eval_bc(config, ckpt_name, save_episode=True, equipment_model='vx300s_bimanu
     task_name = config['task_name']
     temporal_agg = config['temporal_agg']
     use_mask_conditioning = config.get('use_mask_conditioning', False)
+    mask_ablation = config.get('mask_ablation', 'oracle')
     onscreen_cam = 'angle'
 
     # load policy and stats
@@ -257,6 +279,8 @@ def eval_bc(config, ckpt_name, save_episode=True, equipment_model='vx300s_bimanu
     episode_returns = []
     highest_rewards = []
     rollout_logs = []
+    if use_mask_conditioning:
+        print(f'[Eval] mask_ablation={mask_ablation}')
     for rollout_id in range(num_rollouts):
         rollout_id += 0
         ### set task
@@ -267,6 +291,8 @@ def eval_bc(config, ckpt_name, save_episode=True, equipment_model='vx300s_bimanu
         elif 'sim_lifting_cube' in task_name:
             if 'excavator' in equipment_model:
                 BOX_POSE[0] = sample_box_pose_for_excavator()
+            elif 'with_complex_scene' in task_name:
+                BOX_POSE[0] = sample_complex_scene_pose_eval()
             else:
                 BOX_POSE[0] = sample_box_pose_eval()
         else:
@@ -276,6 +302,11 @@ def eval_bc(config, ckpt_name, save_episode=True, equipment_model='vx300s_bimanu
         static_mask_dict = None
         if use_mask_conditioning:
             static_mask_dict = build_oracle_static_mask_dict(env._physics, camera_names, task_name)
+            static_mask_dict = apply_mask_ablation(
+                static_mask_dict,
+                mode=mask_ablation,
+                seed=int(config['seed']) + int(rollout_id),
+            )
 
         ### onscreen render
         if onscreen_render:
@@ -383,7 +414,7 @@ def eval_bc(config, ckpt_name, save_episode=True, equipment_model='vx300s_bimanu
         if save_episode:
             success_tag = 'Success' if success == 1 else 'Failure'
             video_name = f'video{rollout_id}_r{int(episode_highest_reward)}_ret{episode_return:.2f}_{success_tag}.mp4'
-            save_videos(image_list, DT, video_path=os.path.join(ckpt_dir, video_name))
+            save_videos(image_list, DT, video_path=os.path.join(eval_output_dir, video_name))
 
     success_rate = np.mean(np.array(highest_rewards) == env_max_reward)
     avg_return = np.mean(episode_returns)
@@ -397,7 +428,7 @@ def eval_bc(config, ckpt_name, save_episode=True, equipment_model='vx300s_bimanu
 
     # save success rate to txt
     result_file_name = 'result_' + ckpt_name.split('.')[0] + '.txt'
-    with open(os.path.join(ckpt_dir, result_file_name), 'w') as f:
+    with open(os.path.join(eval_output_dir, result_file_name), 'w') as f:
         f.write(summary_str)
         f.write(repr(episode_returns))
         f.write('\n\n')
@@ -407,7 +438,7 @@ def eval_bc(config, ckpt_name, save_episode=True, equipment_model='vx300s_bimanu
         f.write(json.dumps(config, ensure_ascii=False, indent=2))
 
     rollout_log_file_name = 'result_' + ckpt_name.split('.')[0] + '_rollout_log.csv'
-    rollout_log_path = os.path.join(ckpt_dir, rollout_log_file_name)
+    rollout_log_path = os.path.join(eval_output_dir, rollout_log_file_name)
     with open(rollout_log_path, 'w', newline='') as csvfile:
         fieldnames = [
             'rollout_id', 'task_name', 'equipment_model',

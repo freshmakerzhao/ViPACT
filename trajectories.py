@@ -76,7 +76,7 @@ def _build_sim_lifting_cube(ts):
 def get_trajectory(task_name, ts):
     if task_name == 'sim_transfer_cube_scripted':
         return _build_sim_transfer_cube(ts)
-    elif task_name == 'sim_lifting_cube_scripted':
+    elif 'sim_lifting_cube' in task_name:
         return _build_sim_lifting_cube(ts)
 
     raise ValueError(f"Unknown task name: {task_name}")
