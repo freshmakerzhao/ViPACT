@@ -9,10 +9,15 @@ from constants import PUPPET_GRIPPER_POSITION_NORMALIZE_FN, SIM_TASK_CONFIGS, lo
 from ee_sim_env import make_ee_sim_env
 from sim_env import make_sim_env, BOX_POSE
 from scripted_policy import PickAndTransferPolicy, InsertionPolicy, LiftingAndMovingPolicy, ExcavatorMocapLiftingPolicy
-from utils import build_oracle_static_mask_dict
+from utils import build_oracle_static_mask_dict, resolve_target_geom_name, get_complex_scene_target_geom_names, sample_complex_scene_pose
 
 import IPython
 e = IPython.embed
+
+TASK_SIM_TRANSFER = 'sim_transfer_cube_scripted'
+TASK_SIM_INSERTION = 'sim_insertion_scripted'
+TASK_SIM_LIFTING = 'sim_lifting_cube_scripted'
+TASK_SIM_LIFTING_COMPLEX = 'sim_lifting_cube_with_complex_scene_scripted'
 
 
 def main(args):
@@ -50,11 +55,37 @@ def main(args):
     task_config = get_sim_task_config(task_name, config_path)
     episode_len = task_config['episode_len']
     camera_names = task_config['camera_names']
-    if task_name == 'sim_transfer_cube_scripted':
+    # ViPACT 固定策略：仅 cockpit 生成 oracle mask；没有 cockpit 时不生成任何 oracle mask。
+    mask_camera_names = ['cockpit'] if 'cockpit' in camera_names else []
+    print(f'[Record] mask_camera_names={mask_camera_names}')
+    is_complex_lifting = task_name == TASK_SIM_LIFTING_COMPLEX
+    # target_conditioning 是复杂搬运任务的特殊配置项，默认关闭，开启后会根据 target_id 切换不同目标物体进行训练
+    target_conditioning_cfg = yaml_config.get('target_conditioning', {})
+    target_conditioning_enabled = bool(target_conditioning_cfg.get('enabled', False))
+    target_sampling_mode = target_conditioning_cfg.get('sampling', 'cycle')
+    counterfactual_same_layout = bool(target_conditioning_cfg.get('counterfactual_same_layout', False))
+    if target_sampling_mode not in ('cycle', 'random'):
+        # cycle：按 0,1,2,3,0,1... 轮询，分布均匀、可复现。
+        # random：每条随机选一个目标。
+        raise ValueError(f'Unsupported target_conditioning.sampling={target_sampling_mode}, expected cycle/random')
+    if target_conditioning_enabled and not is_complex_lifting:
+        print('[WARN] target_conditioning.enabled=True but task is not complex lifting. Fallback to single target.')
+        target_conditioning_enabled = False
+    if counterfactual_same_layout and not is_complex_lifting:
+        print('[WARN] target_conditioning.counterfactual_same_layout=True but task is not complex lifting. Disabled.')
+        counterfactual_same_layout = False
+    if counterfactual_same_layout and not target_conditioning_enabled:
+        print('[WARN] counterfactual_same_layout=True requires target_conditioning.enabled=True. Disabled.')
+        counterfactual_same_layout = False
+    # 获取target_id与target_geom_name的映射关系，复杂搬运任务有多个目标物体可选，其他任务默认单目标
+    complex_target_geom_names = get_complex_scene_target_geom_names() if is_complex_lifting else []
+    if counterfactual_same_layout and len(complex_target_geom_names) == 0:
+        raise ValueError('counterfactual_same_layout=True requires non-empty complex target geom list')
+    if task_name == TASK_SIM_TRANSFER:
         policy_cls = PickAndTransferPolicy
-    elif task_name == 'sim_insertion_scripted':
+    elif task_name == TASK_SIM_INSERTION:
         policy_cls = InsertionPolicy
-    elif 'sim_lifting_cube' in task_name:
+    elif task_name in (TASK_SIM_LIFTING, TASK_SIM_LIFTING_COMPLEX):
         if equipment_model == 'excavator_simple':
             policy_cls = ExcavatorMocapLiftingPolicy
         else:
@@ -68,16 +99,57 @@ def main(args):
     else:
         state_dim = 14 if arm_nums == 2 else 7
 
+    layout_pose_cache = []
+    if counterfactual_same_layout:
+        targets_per_layout = len(complex_target_geom_names)
+        num_layouts = (num_episodes + targets_per_layout - 1) // targets_per_layout
+        for _ in range(num_layouts):
+            layout_pose_cache.append(sample_complex_scene_pose())
+        print(
+            f'[Record] counterfactual_same_layout enabled: '
+            f'num_layouts={num_layouts}, targets_per_layout={targets_per_layout}, num_episodes={num_episodes}'
+        )
+
     success = []
     for episode_idx in range(num_episodes):
+        fixed_layout_pose = None
+        layout_id = -1
+        # 复杂搬运任务：可选“同一布局下遍历目标”反事实数据模式
+        if counterfactual_same_layout:
+            targets_per_layout = len(complex_target_geom_names)
+            layout_id = int(episode_idx // targets_per_layout)
+            target_id = int(episode_idx % targets_per_layout)
+            fixed_layout_pose = np.asarray(layout_pose_cache[layout_id], dtype=np.float64).copy()
+        # 复杂搬运任务根据 target_id 切换目标物体，生成多样化数据；其他任务默认单目标不变
+        elif target_conditioning_enabled:
+            if target_sampling_mode == 'random':
+                target_id = int(np.random.randint(0, len(complex_target_geom_names)))
+            else:
+                target_id = int(episode_idx % len(complex_target_geom_names))
+        else:
+            target_id = 0
+        target_geom_name = resolve_target_geom_name(task_name, target_id)
+
         print(f'{episode_idx=}')
+        if layout_id >= 0:
+            print(f'[Record] layout_id={layout_id}, target_id={target_id}, target_geom_name={target_geom_name}')
+        else:
+            print(f'[Record] target_id={target_id}, target_geom_name={target_geom_name}')
         print('Rollout out EE space scripted policy')
         # 第一阶段：在 EE 空间执行脚本策略，得到关节轨迹
         # setup the environment
         env = make_ee_sim_env(task_name, equipment_model=equipment_model)
+        if hasattr(env, 'task'):
+            env.task.current_target_id = target_id
+            env.task.target_geom_name = target_geom_name
+            if fixed_layout_pose is not None:
+                env.task.fixed_scene_pose = fixed_layout_pose
         ts = env.reset()
         episode = [ts]
-        policy = policy_cls(inject_noise)
+        if policy_cls is LiftingAndMovingPolicy:
+            policy = policy_cls(inject_noise, target_id=target_id)
+        else:
+            policy = policy_cls(inject_noise)
         # setup plotting
         if onscreen_render:
             ax = plt.subplot()
@@ -132,10 +204,20 @@ def main(args):
         # setup the environment
         print('Replaying joint commands')
         env = make_sim_env(task_name, equipment_model=equipment_model)
+        if hasattr(env, 'task'):
+            env.task.current_target_id = target_id
+            env.task.target_geom_name = target_geom_name
         # 将物体初始位姿同步到 sim_env
         BOX_POSE[0] = subtask_info # make sure the sim_env has the same object configurations as ee_sim_env
         ts = env.reset()
-        static_mask_dict = build_oracle_static_mask_dict(env._physics, camera_names, task_name)
+        # 获取静态掩码，用于后续训练中去除不必要的背景干扰，提升模型专注于目标物体和机械臂的学习效果
+        static_mask_dict = build_oracle_static_mask_dict(
+            env._physics,
+            mask_camera_names,
+            task_name,
+            target_geom_name=target_geom_name,
+            allow_empty_masks=True,
+        )
 
         episode_replay = [ts]
         # setup plotting
@@ -182,6 +264,7 @@ def main(args):
         }
         for cam_name in camera_names:
             data_dict[f'/observations/images/{cam_name}'] = []
+        for cam_name in mask_camera_names:
             data_dict[f'/observations/static_masks/{cam_name}'] = static_mask_dict[cam_name].astype(np.uint8)
 
         # 因为重放会多出 1 个动作与 1 个时间步，这里截断保持一致
@@ -206,12 +289,18 @@ def main(args):
         dataset_path = os.path.join(dataset_dir, f'episode_{episode_idx}')
         with h5py.File(dataset_path + '.hdf5', 'w', rdcc_nbytes=1024 ** 2 * 2) as root:
             root.attrs['sim'] = True
+            root.attrs['target_id'] = int(target_id)
+            root.attrs['target_geom_name'] = str(target_geom_name)
+            root.attrs['target_conditioning_enabled'] = bool(target_conditioning_enabled)
+            root.attrs['layout_id'] = int(layout_id)
+            root.attrs['counterfactual_same_layout'] = bool(counterfactual_same_layout)
             obs = root.create_group('observations')
             image = obs.create_group('images')
             static_masks = obs.create_group('static_masks')
             for cam_name in camera_names:
                 _ = image.create_dataset(cam_name, (max_timesteps, 480, 640, 3), dtype='uint8',
                                          chunks=(1, 480, 640, 3), )
+            for cam_name in mask_camera_names:
                 _ = static_masks.create_dataset(cam_name, (480, 640), dtype='uint8')
             # compression='gzip',compression_opts=2,)
             # compression=32001, compression_opts=(0, 0, 0, 0, 9, 1, 1), shuffle=False)

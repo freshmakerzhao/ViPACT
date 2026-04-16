@@ -429,6 +429,11 @@ class LiftingCubeEETask(BimanualViperXEETask):
         # False: 原始单目标方块场景（只随机 red_box）
         # True : 复杂场景（随机 red_box + 3 个干扰方块）
         self.use_complex_scene = use_complex_scene
+        # 默认为 red_box
+        self.current_target_id = 0
+        self.target_geom_name = 'red_box'
+        # 可选：用于反事实数据生成时固定布局（shape=(28,)）
+        self.fixed_scene_pose = None
 
     def initialize_episode(self, physics):
         """Sets the state of the environment at the start of each episode."""
@@ -439,7 +444,14 @@ class LiftingCubeEETask(BimanualViperXEETask):
             # flat_scene_pose shape = (28,) = 4 * (xyz + quat)
             # 固定顺序:
             # [red_box, distractor_box_1, distractor_box_2, distractor_box_3]
-            flat_scene_pose = sample_complex_scene_pose()
+            if self.fixed_scene_pose is None:
+                flat_scene_pose = sample_complex_scene_pose()
+            else:
+                flat_scene_pose = np.asarray(self.fixed_scene_pose, dtype=np.float64).reshape(-1)
+                if flat_scene_pose.size != 28:
+                    raise ValueError(
+                        f'Unexpected fixed_scene_pose size={flat_scene_pose.size}, expected 28'
+                    )
             joint_names = [
                 'red_box_joint',
                 'distractor_box_1_joint',
@@ -493,20 +505,40 @@ class LiftingCubeEETask(BimanualViperXEETask):
             contact_pair = (name_geom_1, name_geom_2)
             all_contact_pairs.append(contact_pair)
 
-        # 判断夹爪和盒子的接触情况，如果夹爪接触盒子，则touch_right_gripper为True
-        touch_right_gripper = ("red_box", "vx300s_right/10_right_gripper_finger") in all_contact_pairs or ("vx300s_right/10_right_gripper_finger", "red_box") in all_contact_pairs 
-        # 判断盒子和桌面的接触情况，如果盒子接触桌面，则touch_table为True
-        touch_table = ("red_box", "table") in all_contact_pairs or ("table", "red_box") in all_contact_pairs 
-        touch_tray = ("red_box", "yellow_tray") in all_contact_pairs or ("yellow_tray", "red_box") in all_contact_pairs 
+        target_geom = getattr(self, 'target_geom_name', 'red_box')
+        right_finger_geom = "vx300s_right/10_right_gripper_finger"
+        left_finger_geom  = "vx300s_right/10_left_gripper_finger"
+        table_geom = "table"
+        tray_geom = "yellow_tray"
+
+        # 判断夹爪与目标方块接触（左右任一手指接触即可）
+        touch_left_gripper = (
+            (target_geom, left_finger_geom) in all_contact_pairs
+            or (left_finger_geom, target_geom) in all_contact_pairs
+        )
+        touch_right_gripper = (
+            (target_geom, right_finger_geom) in all_contact_pairs
+            or (right_finger_geom, target_geom) in all_contact_pairs
+        )
+        touch_gripper = touch_left_gripper or touch_right_gripper
+        # 判断目标方块与桌面/托盘接触
+        touch_table = (
+            (target_geom, table_geom) in all_contact_pairs
+            or (table_geom, target_geom) in all_contact_pairs
+        )
+        touch_tray = (
+            (target_geom, tray_geom) in all_contact_pairs
+            or (tray_geom, target_geom) in all_contact_pairs
+        )
 
         reward = 0
-        if touch_right_gripper:
+        if touch_gripper:
             reward = 1
-        if touch_right_gripper and not touch_table:
+        if touch_gripper and not touch_table:
             reward = 2
-        if touch_right_gripper and touch_tray:
+        if touch_gripper and touch_tray:
             reward = 3
-        if not touch_right_gripper and touch_tray:
+        if not touch_gripper and touch_tray:
             reward = 4
         return reward
 

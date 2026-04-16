@@ -12,7 +12,7 @@ from tqdm import tqdm
 from einops import rearrange
 
 from constants import DT, PUPPET_GRIPPER_JOINT_OPEN, load_config, get_training_config, get_equipment_model, get_sim_task_config
-from utils import load_data, build_oracle_static_mask_dict # data functions
+from utils import load_data, build_oracle_static_mask_dict, resolve_target_geom_name # data functions
 from utils import sample_box_pose, sample_box_pose_eval, sample_box_pose_for_excavator, sample_complex_scene_pose_eval, sample_insertion_pose # robot functions
 from utils import compute_dict_mean, set_seed, detach_dict # helper functions
 from policy import ACTPolicy, CNNMLPPolicy
@@ -47,6 +47,7 @@ def main(args):
     clear_videos_before_eval = training_config.get('clear_videos_before_eval', True) # 是否清除对应目录下的mp4视频，默认清除
     mask_ablation = yaml_config.get('eval', {}).get('mask_ablation', 'oracle') # 验证时的mask消融方式，默认不消融（oracle），可选项包括移除（zero）和随机噪声（random）
     eval_output_dir = yaml_config.get('eval', {}).get('output_dir', ckpt_dir) # 评估产物输出目录，默认与ckpt目录一致
+    eval_target_id = int(yaml_config.get('eval', {}).get('target_id', 0)) # 复杂场景评估目标，默认0以保持旧行为
     equipment_model = get_equipment_model(config_path)
     seed = training_config.get('seed', 1000)
     use_mask_conditioning = training_config.get('use_mask_conditioning', False)
@@ -118,6 +119,7 @@ def main(args):
         'image_channels': image_channels,
         'mask_ablation': mask_ablation,
         'eval_output_dir': eval_output_dir,
+        'eval_target_id': eval_target_id,
     }
     if is_eval:
         if not os.path.isdir(eval_output_dir):
@@ -180,7 +182,12 @@ def make_optimizer(policy_class, policy):
     return optimizer
 
 
-def get_image(ts, camera_names, use_mask_conditioning=False, static_mask_dict=None):
+def get_image(
+    ts,
+    camera_names,
+    use_mask_conditioning=False,
+    static_mask_dict=None,
+):
     if not use_mask_conditioning:
         # Keep the original ACT RGB preprocessing path for strict backward-compatibility.
         curr_images = []
@@ -191,12 +198,18 @@ def get_image(ts, camera_names, use_mask_conditioning=False, static_mask_dict=No
         curr_image = torch.from_numpy(curr_image / 255.0).float().cuda().unsqueeze(0)
         return curr_image
 
+    # ViPACT 固定策略：仅 cockpit 使用 oracle mask；没有 cockpit 时所有相机回退全零 mask。
+    active_mask_cameras = {'cockpit'} if 'cockpit' in camera_names else set()
+
     curr_images = []
     for cam_name in camera_names:
         curr_image = rearrange(ts.observation['images'][cam_name], 'h w c -> c h w').astype(np.float32) / 255.0
-        if static_mask_dict is None or cam_name not in static_mask_dict:
-            raise ValueError(f'Missing static mask for camera {cam_name}')
-        static_mask = static_mask_dict[cam_name].astype(np.float32)
+        if cam_name in active_mask_cameras:
+            if static_mask_dict is None or cam_name not in static_mask_dict:
+                raise ValueError(f'Missing static mask for camera {cam_name}')
+            static_mask = static_mask_dict[cam_name].astype(np.float32)
+        else:
+            static_mask = np.zeros(curr_image.shape[1:], dtype=np.float32)
         curr_image = np.concatenate([curr_image, np.expand_dims(static_mask, axis=0)], axis=0)
         curr_images.append(curr_image)
     curr_image = np.stack(curr_images, axis=0)
@@ -240,7 +253,13 @@ def eval_bc(config, ckpt_name, save_episode=True, equipment_model='vx300s_bimanu
     temporal_agg = config['temporal_agg']
     use_mask_conditioning = config.get('use_mask_conditioning', False)
     mask_ablation = config.get('mask_ablation', 'oracle')
+    eval_target_id = int(config.get('eval_target_id', 0))
     onscreen_cam = 'angle'
+    if task_name != 'sim_lifting_cube_with_complex_scene_scripted' and eval_target_id != 0:
+        print(
+            f"[Eval][WARN] eval.target_id={eval_target_id} is ignored for task={task_name}. "
+            "Fallback to default target."
+        )
 
     # load policy and stats
     ckpt_path = os.path.join(ckpt_dir, ckpt_name)
@@ -298,10 +317,26 @@ def eval_bc(config, ckpt_name, save_episode=True, equipment_model='vx300s_bimanu
         else:
             raise NotImplementedError
         init_pose = np.asarray(BOX_POSE[0], dtype=np.float64).copy()
+        target_geom_name = None
+        if task_name == 'sim_lifting_cube_with_complex_scene_scripted':
+            target_geom_name = resolve_target_geom_name(task_name, eval_target_id)
+            if hasattr(env, 'task'):
+                env.task.current_target_id = eval_target_id
+                env.task.target_geom_name = target_geom_name
         ts = env.reset()
         static_mask_dict = None
         if use_mask_conditioning:
-            static_mask_dict = build_oracle_static_mask_dict(env._physics, camera_names, task_name)
+            active_mask_cameras = ['cockpit'] if 'cockpit' in camera_names else []
+            if len(active_mask_cameras) > 0:
+                static_mask_dict = build_oracle_static_mask_dict(
+                    env._physics,
+                    active_mask_cameras,
+                    task_name,
+                    target_geom_name=target_geom_name,
+                    allow_empty_masks=True,
+                )
+            else:
+                static_mask_dict = {}
             static_mask_dict = apply_mask_ablation(
                 static_mask_dict,
                 mode=mask_ablation,

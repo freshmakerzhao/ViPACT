@@ -280,6 +280,9 @@ class LiftingCubeTask(BimanualViperXTask):
         super().__init__(random=random, arm_nums=1)
         self.max_reward = 4
         self.equipment_model = equipment_model
+        # 默认保持旧行为：目标为 red_box
+        self.current_target_id = 0
+        self.target_geom_name = 'red_box'
 
     def initialize_episode(self, physics):
         """Sets the state of the environment at the start of each episode."""
@@ -342,20 +345,40 @@ class LiftingCubeTask(BimanualViperXTask):
             contact_pair = (name_geom_1, name_geom_2)
             all_contact_pairs.append(contact_pair)
 
-        touch_right_gripper = ("red_box", "vx300s_right/10_right_gripper_finger") in all_contact_pairs or ("vx300s_right/10_right_gripper_finger", "red_box") in all_contact_pairs 
-        
-        # 判断盒子和桌面的接触情况，如果盒子接触桌面，则touch_table为True
-        touch_table = ("red_box", "table") in all_contact_pairs or ("table", "red_box") in all_contact_pairs 
-        touch_tray = ("red_box", "yellow_tray") in all_contact_pairs or ("yellow_tray", "red_box") in all_contact_pairs 
+        target_geom = getattr(self, 'target_geom_name', 'red_box')
+        left_finger_geom = "vx300s_right/10_left_gripper_finger"
+        right_finger_geom = "vx300s_right/10_right_gripper_finger"
+        table_geom = "table"
+        tray_geom = "yellow_tray"
+
+        touch_left_gripper = (
+            (target_geom, left_finger_geom) in all_contact_pairs
+            or (left_finger_geom, target_geom) in all_contact_pairs
+        )
+        touch_right_gripper = (
+            (target_geom, right_finger_geom) in all_contact_pairs
+            or (right_finger_geom, target_geom) in all_contact_pairs
+        )
+        touch_gripper = touch_left_gripper or touch_right_gripper
+
+        # 判断目标方块与桌面/托盘接触情况
+        touch_table = (
+            (target_geom, table_geom) in all_contact_pairs
+            or (table_geom, target_geom) in all_contact_pairs
+        )
+        touch_tray = (
+            (target_geom, tray_geom) in all_contact_pairs
+            or (tray_geom, target_geom) in all_contact_pairs
+        )
 
         reward = 0
-        if touch_right_gripper:
+        if touch_gripper:
             reward = 1
-        if touch_right_gripper and not touch_table:
+        if touch_gripper and not touch_table:
             reward = 2
-        if touch_right_gripper and touch_tray:
+        if touch_gripper and touch_tray:
             reward = 3
-        if not touch_right_gripper and touch_tray:
+        if not touch_gripper and touch_tray:
             reward = 4
         return reward
 
