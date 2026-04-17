@@ -6,6 +6,7 @@ from typing import Dict, List, Union
 
 import numpy as np
 from PIL import Image
+from interfaces import DetectionCandidate, DetectionResult
 
 
 @dataclass
@@ -132,3 +133,44 @@ class GroundingDinoDetector:
             "detections": detections,
             "image_size_hw": [int(h), int(w)],
         }
+
+    def detect_boxes_typed(
+        self,
+        image: Union[np.ndarray, Image.Image, str],
+        text_query: str,
+        confidence_threshold: float = 0.5,
+    ) -> DetectionResult:
+        raw = self.detect_boxes(
+            image=image,
+            text_query=text_query,
+            confidence_threshold=float(confidence_threshold),
+        )
+        detections = raw.get("detections", [])
+        candidates: List[DetectionCandidate] = []
+        for d in detections:
+            candidates.append(
+                DetectionCandidate(
+                    index=int(d.get("index", -1)),
+                    score=float(d.get("score", 0.0)),
+                    label=str(d.get("label", "")),
+                    box_xyxy=[float(v) for v in d.get("box_xyxy", [0, 0, 0, 0])],
+                    meta={
+                        "rank": int(d.get("rank", -1)),
+                        "area_ratio": float(d.get("area_ratio", 0.0)),
+                    },
+                )
+            )
+
+        return DetectionResult(
+            ok=bool(raw.get("num_boxes", 0) > 0),
+            candidates=candidates,
+            reason="" if raw.get("num_boxes", 0) > 0 else "no_boxes",
+            meta={
+                "query": raw.get("query", ""),
+                "confidence_threshold": float(raw.get("confidence_threshold", confidence_threshold)),
+                "text_threshold": float(raw.get("text_threshold", self.text_threshold)),
+                "num_boxes": int(raw.get("num_boxes", 0)),
+                "image_size_hw": raw.get("image_size_hw", []),
+                "raw": raw,
+            },
+        )

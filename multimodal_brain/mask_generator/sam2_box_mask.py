@@ -5,6 +5,7 @@ from typing import List, Tuple, Union
 
 import numpy as np
 from PIL import Image
+from interfaces import MaskResult
 
 
 @dataclass
@@ -101,6 +102,30 @@ class Sam2BoxMaskGenerator:
             if pad_h > 0 or pad_w > 0:
                 best_mask = np.pad(best_mask, ((0, pad_h), (0, pad_w)), mode="constant")
         return best_mask
+
+    def predict_mask_typed(
+        self,
+        image: Union[str, np.ndarray, Image.Image],
+        box_xyxy: List[float],
+    ) -> MaskResult:
+        try:
+            mask = self.predict_mask(image=image, box_xyxy=box_xyxy).astype(np.uint8)
+            return MaskResult(
+                ok=bool(mask.sum() > 0),
+                mask=mask,
+                reason="" if mask.sum() > 0 else "empty_mask",
+                meta={
+                    "box_xyxy": [float(v) for v in box_xyxy],
+                    "mask_sum": int(mask.sum()),
+                },
+            )
+        except Exception as e:
+            return MaskResult(
+                ok=False,
+                mask=None,
+                reason=f"sam2_error: {e}",
+                meta={"box_xyxy": [float(v) for v in box_xyxy]},
+            )
 
 
 def mask_overlay(rgb: np.ndarray, mask: np.ndarray) -> np.ndarray:

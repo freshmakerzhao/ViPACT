@@ -6,6 +6,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from typing import Any, Dict
+from interfaces import InstructionParseResult
 
 
 @dataclass
@@ -180,6 +181,16 @@ class QwenInstructionParser:
         except Exception:
             return _heuristic_parse(instruction)
 
+    def parse_typed(self, instruction: str) -> InstructionParseResult:
+        parsed = self.parse(instruction)
+        return InstructionParseResult(
+            text_prompt=str(parsed.text_prompt),
+            axis=str(parsed.axis),
+            reverse=bool(parsed.reverse),
+            target_rank=int(parsed.target_rank),
+            raw=parsed.to_dict(),
+        )
+
 
 def parse_instruction_with_qwen(
     instruction: str,
@@ -190,4 +201,3 @@ def parse_instruction_with_qwen(
 ) -> Dict[str, Any]:
     parser = QwenInstructionParser(api_key=api_key, base_url=base_url, model=model)
     return parser.parse(instruction).to_dict()
-

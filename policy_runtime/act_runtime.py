@@ -11,7 +11,7 @@ import torch
 from einops import rearrange
 
 from policy import ACTPolicy
-from vipact_interfaces import PolicyStepInput, PolicyStepOutput
+from interfaces import PolicyStepInput, PolicyStepOutput
 
 
 def _build_act_policy(policy_config: Dict[str, Any]) -> ACTPolicy:

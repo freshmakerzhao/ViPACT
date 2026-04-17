@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
+from interfaces import TargetSelectionResult
 
 
 @dataclass
@@ -97,3 +98,25 @@ def find_target_location(
         "sorted_boxes": valid_boxes,
         "note": "tolerance is ignored in simplified selector",
     }
+
+
+def select_target_typed(
+    dino_json: Dict[str, Any],
+    rules: Dict[str, Any],
+    *,
+    tolerance: float = 20.0,
+) -> TargetSelectionResult:
+    raw = find_target_location(
+        dino_json=dino_json,
+        rules=rules,
+        tolerance=float(tolerance),
+    )
+    return TargetSelectionResult(
+        ok=bool(raw.get("ok", False)),
+        reason=str(raw.get("reason", "")),
+        selected=raw.get("selected", {}) or {},
+        meta={
+            "sorted_boxes": raw.get("sorted_boxes", []),
+            "raw": raw,
+        },
+    )
