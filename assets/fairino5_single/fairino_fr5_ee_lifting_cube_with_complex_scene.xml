@@ -1,0 +1,135 @@
+<mujoco>
+    <include file="scene.xml"/>
+    <include file="fairino_fr5_dependencies.xml"/>
+
+    <equality>
+        <weld body1="mocap_right" body2="fairino_fr5/wrist3_link" solref="0.005 1" solimp="0.99 0.99 0.001" />
+    </equality>
+    
+    <worldbody>
+        <include file="fairino_fr5.xml" />
+        
+        <!-- <body mocap="true" name="mocap_right" pos="0 0.396 0.425"> -->
+        <!-- <body mocap="true" name="mocap_right" pos="-0.32 0.20 0.05"> -->
+        <body mocap="true" name="mocap_right" pos="-0.32001 0.1979 0.051" quat="0.70710528 0.70710828 0 0">
+            <site pos="0 0 0" size="0.003 0.003 0.03" type="box" name="mocap_right_site1" rgba="1 0 0 1"/>
+            <site pos="0 0 0" size="0.003 0.03 0.003" type="box" name="mocap_right_site2" rgba="1 0 0 1"/>
+            <site pos="0 0 0" size="0.03 0.003 0.003" type="box" name="mocap_right_site3" rgba="1 0 0 1"/>
+            <!-- <geom type="sphere" size="0.05" rgba="1 0 0 0.5" contype="0" conaffinity="0"/> -->
+        </body>
+
+        <body name="box" pos="0.2 0.5 0.05">
+            <joint name="red_box_joint" type="free" frictionloss="0.01" />
+            <inertial pos="0 0 0" mass="0.05" diaginertia="0.002 0.002 0.002" />
+            <geom condim="4" friction="2.0 0.05 0.0001" solimp="0.9 0.95 0.001" solref="0.002 1" pos="0 0 0" size="0.02 0.02 0.02" type="box" name="red_box" rgba="1 0 0 1" />
+        </body>
+        <body name="distractor_box_1_body" pos="-0.12 0.48 0.05">
+            <joint name="distractor_box_1_joint" type="free" frictionloss="0.01" />
+            <inertial pos="0 0 0" mass="0.05" diaginertia="0.002 0.002 0.002" />
+            <geom condim="4" friction="2.0 0.05 0.0001" solimp="0.9 0.95 0.001"
+                  solref="0.002 1" pos="0 0 0" size="0.02 0.02 0.02" type="box" name="distractor_box_1" rgba="1 0 0 1" />
+        </body>
+        <body name="distractor_box_2_body" pos="0.30 0.48 0.05">
+            <joint name="distractor_box_2_joint" type="free" frictionloss="0.01" />
+            <inertial pos="0 0 0" mass="0.05" diaginertia="0.002 0.002 0.002" />
+            <geom condim="4" friction="2.0 0.05 0.0001" solimp="0.9 0.95 0.001"
+                  solref="0.002 1" pos="0 0 0" size="0.02 0.02 0.02" type="box" name="distractor_box_2" rgba="1 0 0 1" />
+        </body>
+        <body name="distractor_box_3_body" pos="0.30 0.66 0.05">
+            <joint name="distractor_box_3_joint" type="free" frictionloss="0.01" />
+            <inertial pos="0 0 0" mass="0.05" diaginertia="0.002 0.002 0.002" />
+            <geom condim="4" friction="2.0 0.05 0.0001" solimp="0.9 0.95 0.001"
+                  solref="0.002 1" pos="0 0 0" size="0.02 0.02 0.02" type="box" name="distractor_box_3" rgba="1 0 0 1" />
+        </body>
+        <body name="tray" pos="0.4 0.85 0">
+            <geom type="cylinder" size="0.08 0.01" rgba="0.8 0.8 0.2 1" name="yellow_tray"/>
+        </body>
+
+        <!-- ============  x=[0.0, 0.2], y=[0.4, 0.6] ============ -->
+        <!-- <geom name="box_spawn_region_fill_训练范围"
+              type="box"
+              pos="0.1 0.5 0.0005"
+              size="0.1 0.1 0.0005"
+              rgba="0.1 0.8 0.2 0.12"
+              contype="0"
+              conaffinity="0"/> -->
+        <!-- <geom name="box_spawn_region_edge_top" type="box" pos="0.1 0.6 0.0015" size="0.1 0.001 0.0015" rgba="0.1 0.8 0.2 0.9" contype="0" conaffinity="0"/>
+        <geom name="box_spawn_region_edge_bottom" type="box" pos="0.1 0.4 0.0015" size="0.1 0.001 0.0015" rgba="0.1 0.8 0.2 0.9" contype="0" conaffinity="0"/>
+        <geom name="box_spawn_region_edge_left" type="box" pos="0.0 0.5 0.0015" size="0.001 0.1 0.0015" rgba="0.1 0.8 0.2 0.9" contype="0" conaffinity="0"/>
+        <geom name="box_spawn_region_edge_right" type="box" pos="0.2 0.5 0.0015" size="0.001 0.1 0.0015" rgba="0.1 0.8 0.2 0.9" contype="0" conaffinity="0"/> -->
+        <!-- ============  x=[0.0, 0.2], y=[0.4, 0.6] ============ -->
+
+        <!-- ============  x=[-0.1, 0.3], y=[0.3, 0.7] ============ -->
+        <!-- 这里size指的是从pos往外各扩多大 -->
+        <!-- <geom name="box_spawn_region_eval_fill_与训练同中心，面积是4倍"
+            type="box"
+            pos="0.1 0.5 0.0004"
+            size="0.2 0.2 0.0004"
+            rgba="0.2 0.4 1.0 0.08"
+            contype="0"
+            conaffinity="0"/> -->
+        <!-- ============  x=[-0.1, 0.3], y=[0.3, 0.7] ============ -->
+
+        
+        <!-- ============  x=[-0.2, 0.0], y=[0.4, 0.6] ============ -->
+        <!-- 这里size指的是从pos往外各扩多大 -->
+        <!-- <geom name="box_spawn_region_eval_fill_与训练面积相邻，同大小"
+            type="box"
+            pos="-0.1 0.5 0.0004"
+            size="0.1 0.1 0.0004"
+            rgba="0.2 0.4 1.0 0.08"
+            contype="0"
+            conaffinity="0"/> -->
+        <!-- ============  x=[-0.2, 0.0], y=[0.4, 0.6] ============ -->
+
+        <!-- ============  ring: outer x=[-0.1,0.3], y=[0.3,0.7] minus inner x=[0.0,0.2], y=[0.4,0.6] ============  -->
+        <!-- <geom name="box_spawn_region_ring_top_在训练面积外面扩一圈，提出中间的训练面积"
+            type="box"
+            pos="0.1 0.65 0.0004"
+            size="0.2 0.05 0.0004"
+            rgba="0.2 0.4 1.0 0.10"
+            contype="0"
+            conaffinity="0"/>
+
+        <geom name="box_spawn_region_ring_bottom"
+            type="box"
+            pos="0.1 0.35 0.0004"
+            size="0.2 0.05 0.0004"
+            rgba="0.2 0.4 1.0 0.10"
+            contype="0"
+            conaffinity="0"/>
+
+        <geom name="box_spawn_region_ring_left"
+            type="box"
+            pos="-0.05 0.5 0.0004"
+            size="0.05 0.1 0.0004"
+            rgba="0.2 0.4 1.0 0.10"
+            contype="0"
+            conaffinity="0"/>
+
+        <geom name="box_spawn_region_ring_right"
+            type="box"
+            pos="0.25 0.5 0.0004"
+            size="0.05 0.1 0.0004"
+            rgba="0.2 0.4 1.0 0.10"
+            contype="0"
+            conaffinity="0"/> -->
+        <!-- ============  ring: outer x=[-0.1,0.3], y=[0.3,0.7] minus inner x=[0.0,0.2], y=[0.4,0.6] ============  -->
+
+    </worldbody>
+
+    <!-- 两个末端执行器 -->
+    <actuator>
+        <position ctrllimited="true" ctrlrange="0.021 0.057" joint="vx300s_right/left_finger" kp="200"  user="1"/>
+        <position ctrllimited="true" ctrlrange="-0.057 -0.021" joint="vx300s_right/right_finger" kp="200"  user="1"/>
+    </actuator>
+    
+    <!-- 初始位置 -->
+    <keyframe>
+        <key name="init_pose" qpos="0 -1.5708 1.5708 -1.5708 -1.5708 0 0.057 -0.057
+                                     0.2 0.5 0.05 1 0 0 0
+                                     -0.12 0.48 0.05 1 0 0 0
+                                     0.30 0.48 0.05 1 0 0 0
+                                     0.30 0.66 0.05 1 0 0 0" />
+    </keyframe>
+</mujoco>

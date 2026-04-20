@@ -28,6 +28,8 @@
         <camera name="top" pos="0 0.6 0.8" fovy="78" mode="targetbody" target="table"/>
         <camera name="angle" pos="0 0 0.6" fovy="78" mode="targetbody" target="table"/>
         <camera name="front_close" pos="0 0.2 0.4" fovy="78" mode="targetbody" target="vx300s_right/camera_focus"/>
+        <!-- 驾驶舱视角：固定在世界坐标，不跟随机械臂运动 -->
+        <camera name="cockpit" pos="0.62 0.60 0.62" fovy="58" mode="targetbody" target="table"/>
     </worldbody>
 
 

@@ -51,13 +51,19 @@ def make_sim_env(task_name, equipment_model: str = 'vx300s_bimanual'):
                                   n_sub_steps=None, flat_observation=False)
     elif 'sim_lifting_cube' in task_name:
         if equipment_model == 'excavator_simple':
-            xml_path = os.path.join(XML_DIR, equipment_model, 'single_viperx_transfer_cube.xml')
-            physics = mujoco.Physics.from_xml_path(xml_path)
+            xml_filename = 'single_viperx_transfer_cube.xml'
             task = ExcavatorSimpleLiftingCubeTask(random=False, equipment_model=equipment_model)
-        else:
-            xml_path = os.path.join(XML_DIR, equipment_model, 'single_viperx_transfer_cube.xml')
-            physics = mujoco.Physics.from_xml_path(xml_path)
+        elif 'fairino5_single' in equipment_model:
+            if 'with_complex_scene' in task_name:
+                xml_filename = 'fairino_fr5_lifting_cube_with_complex_scene.xml'
+            else:
+                xml_filename = 'fairino_fr5_lifting_cube.xml'
             task = LiftingCubeTask(random=False, equipment_model=equipment_model)
+        else:
+            xml_filename = 'single_viperx_transfer_cube.xml'
+            task = LiftingCubeTask(random=False, equipment_model=equipment_model)
+        xml_path = os.path.join(XML_DIR, equipment_model, xml_filename)
+        physics = mujoco.Physics.from_xml_path(xml_path)
         env = control.Environment(physics, task, time_limit=20, control_timestep=DT,
                                   n_sub_steps=None, flat_observation=False)
     else:
@@ -149,7 +155,8 @@ class BimanualViperXTask(base.Task):
         obs['images']['top'] = physics.render(height=480, width=640, camera_id='top')
         obs['images']['angle'] = physics.render(height=480, width=640, camera_id='angle')
         obs['images']['vis'] = physics.render(height=480, width=640, camera_id='front_close')
-        obs['images']['right_pillar'] = physics.render(height=480, width=640, camera_id='right_pillar')
+        obs['images']['cockpit'] = physics.render(height=480, width=640, camera_id='cockpit')
+        # obs['images']['right_pillar'] = physics.render(height=480, width=640, camera_id='right_pillar')
 
         return obs
 
@@ -273,6 +280,9 @@ class LiftingCubeTask(BimanualViperXTask):
         super().__init__(random=random, arm_nums=1)
         self.max_reward = 4
         self.equipment_model = equipment_model
+        # 默认保持旧行为：目标为 red_box
+        self.current_target_id = 0
+        self.target_geom_name = 'red_box'
 
     def initialize_episode(self, physics):
         """Sets the state of the environment at the start of each episode."""
@@ -293,7 +303,28 @@ class LiftingCubeTask(BimanualViperXTask):
             physics.named.data.qpos[:8] = start_pose
             np.copyto(physics.data.ctrl, start_pose)
             assert BOX_POSE[0] is not None
-            physics.named.data.qpos[-7:] = BOX_POSE[0]
+            flat_pose = np.asarray(BOX_POSE[0], dtype=np.float64).reshape(-1)
+            if flat_pose.size % 7 != 0:
+                raise ValueError(f'Unexpected BOX_POSE shape for lifting task: {flat_pose.shape}')
+            joint_names = ['red_box_joint']
+            if flat_pose.size >= 28:
+                joint_names.extend([
+                    'distractor_box_1_joint',
+                    'distractor_box_2_joint',
+                    'distractor_box_3_joint',
+                ])
+            pose_count = min(len(joint_names), flat_pose.size // 7)
+            for i in range(pose_count):
+                joint_name = joint_names[i]
+                pose = flat_pose[i * 7:(i + 1) * 7]
+                try:
+                    joint_id = physics.model.name2id(joint_name, 'joint')
+                except (KeyError, ValueError):
+                    if i == 0:
+                        raise
+                    continue
+                joint_qpos_start = int(physics.model.jnt_qposadr[joint_id])
+                physics.named.data.qpos[joint_qpos_start:joint_qpos_start + 7] = pose
             # print(f"{BOX_POSE=}")
         physics.forward()
         super().initialize_episode(physics)
@@ -314,20 +345,40 @@ class LiftingCubeTask(BimanualViperXTask):
             contact_pair = (name_geom_1, name_geom_2)
             all_contact_pairs.append(contact_pair)
 
-        touch_right_gripper = ("red_box", "vx300s_right/10_right_gripper_finger") in all_contact_pairs or ("vx300s_right/10_right_gripper_finger", "red_box") in all_contact_pairs 
-        
-        # 判断盒子和桌面的接触情况，如果盒子接触桌面，则touch_table为True
-        touch_table = ("red_box", "table") in all_contact_pairs or ("table", "red_box") in all_contact_pairs 
-        touch_tray = ("red_box", "yellow_tray") in all_contact_pairs or ("yellow_tray", "red_box") in all_contact_pairs 
+        target_geom = getattr(self, 'target_geom_name', 'red_box')
+        left_finger_geom = "vx300s_right/10_left_gripper_finger"
+        right_finger_geom = "vx300s_right/10_right_gripper_finger"
+        table_geom = "table"
+        tray_geom = "yellow_tray"
+
+        touch_left_gripper = (
+            (target_geom, left_finger_geom) in all_contact_pairs
+            or (left_finger_geom, target_geom) in all_contact_pairs
+        )
+        touch_right_gripper = (
+            (target_geom, right_finger_geom) in all_contact_pairs
+            or (right_finger_geom, target_geom) in all_contact_pairs
+        )
+        touch_gripper = touch_left_gripper or touch_right_gripper
+
+        # 判断目标方块与桌面/托盘接触情况
+        touch_table = (
+            (target_geom, table_geom) in all_contact_pairs
+            or (table_geom, target_geom) in all_contact_pairs
+        )
+        touch_tray = (
+            (target_geom, tray_geom) in all_contact_pairs
+            or (tray_geom, target_geom) in all_contact_pairs
+        )
 
         reward = 0
-        if touch_right_gripper:
+        if touch_gripper:
             reward = 1
-        if touch_right_gripper and not touch_table:
+        if touch_gripper and not touch_table:
             reward = 2
-        if touch_right_gripper and touch_tray:
+        if touch_gripper and touch_tray:
             reward = 3
-        if not touch_right_gripper and touch_tray:
+        if not touch_gripper and touch_tray:
             reward = 4
         return reward
 
@@ -384,6 +435,7 @@ class ExcavatorSimpleLiftingCubeTask(base.Task):
         obs['images']['top'] = physics.render(height=480, width=640, camera_id='top')
         obs['images']['angle'] = physics.render(height=480, width=640, camera_id='angle')
         obs['images']['vis'] = physics.render(height=480, width=640, camera_id='front_close')
+        obs['images']['cockpit'] = physics.render(height=480, width=640, camera_id='cockpit')
         return obs
 
     def get_reward(self, physics):
@@ -460,4 +512,3 @@ def test_sim_teleop():
 
 if __name__ == '__main__':
     test_sim_teleop()
-

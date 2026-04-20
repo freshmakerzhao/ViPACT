@@ -141,3 +141,6 @@ dmypy.json
 
 data_*
 ckpts
+notes
+api
+.codex

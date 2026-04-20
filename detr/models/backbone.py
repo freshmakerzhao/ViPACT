@@ -88,10 +88,31 @@ class Backbone(BackboneBase):
     def __init__(self, name: str,
                  train_backbone: bool,
                  return_interm_layers: bool,
-                 dilation: bool):
+                 dilation: bool,
+                 image_channels: int = 3):
         backbone = getattr(torchvision.models, name)(
             replace_stride_with_dilation=[False, False, dilation],
             pretrained=is_main_process(), norm_layer=FrozenBatchNorm2d) # pretrained # TODO do we want frozen batch_norm??
+        if image_channels not in (3, 4):
+            raise ValueError(f'Backbone only supports image_channels in {{3,4}}, got {image_channels}')
+        # 设置第一层卷积以适应不同的输入通道数
+        if image_channels == 4:
+            old_conv1 = backbone.conv1
+            new_conv1 = nn.Conv2d(
+                image_channels,
+                old_conv1.out_channels,
+                kernel_size=old_conv1.kernel_size,
+                stride=old_conv1.stride,
+                padding=old_conv1.padding,
+                bias=(old_conv1.bias is not None),
+            )
+            with torch.no_grad():
+                new_conv1.weight[:, :3] = old_conv1.weight
+                # Initialize mask channel with average RGB filters for a stable warm start.
+                new_conv1.weight[:, 3:4] = old_conv1.weight.mean(dim=1, keepdim=True)
+                if old_conv1.bias is not None:
+                    new_conv1.bias.copy_(old_conv1.bias)
+            backbone.conv1 = new_conv1
         num_channels = 512 if name in ('resnet18', 'resnet34') else 2048
         super().__init__(backbone, train_backbone, num_channels, return_interm_layers)
 
@@ -116,7 +137,8 @@ def build_backbone(args):
     position_embedding = build_position_encoding(args)
     train_backbone = args.lr_backbone > 0
     return_interm_layers = args.masks
-    backbone = Backbone(args.backbone, train_backbone, return_interm_layers, args.dilation)
+    image_channels = getattr(args, 'image_channels', 3)
+    backbone = Backbone(args.backbone, train_backbone, return_interm_layers, args.dilation, image_channels=image_channels)
     model = Joiner(backbone, position_embedding)
     model.num_channels = backbone.num_channels
     return model

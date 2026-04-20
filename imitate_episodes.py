@@ -12,8 +12,8 @@ from tqdm import tqdm
 from einops import rearrange
 
 from constants import DT, PUPPET_GRIPPER_JOINT_OPEN, load_config, get_training_config, get_equipment_model, get_sim_task_config
-from utils import load_data # data functions
-from utils import sample_box_pose, sample_box_pose_eval, sample_box_pose_for_excavator, sample_insertion_pose # robot functions
+from utils import load_data, build_oracle_static_mask_dict, resolve_target_geom_name # data functions
+from utils import sample_box_pose, sample_box_pose_eval, sample_box_pose_for_excavator, sample_complex_scene_pose_eval, sample_insertion_pose # robot functions
 from utils import compute_dict_mean, set_seed, detach_dict # helper functions
 from policy import ACTPolicy, CNNMLPPolicy
 from visualize_episodes import save_videos
@@ -44,9 +44,14 @@ def main(args):
     batch_size_train = training_config.get('batch_size', 32)
     batch_size_val = training_config.get('batch_size', 32)
     num_epochs = training_config.get('num_epochs', 2000)
-    clear_videos_before_eval = training_config.get('clear_videos_before_eval', True) # 默认清除
+    clear_videos_before_eval = training_config.get('clear_videos_before_eval', True) # 是否清除对应目录下的mp4视频，默认清除
+    mask_ablation = yaml_config.get('eval', {}).get('mask_ablation', 'oracle') # 验证时的mask消融方式，默认不消融（oracle），可选项包括移除（zero）和随机噪声（random）
+    eval_output_dir = yaml_config.get('eval', {}).get('output_dir', ckpt_dir) # 评估产物输出目录，默认与ckpt目录一致
+    eval_target_id = int(yaml_config.get('eval', {}).get('target_id', 0)) # 复杂场景评估目标，默认0以保持旧行为
     equipment_model = get_equipment_model(config_path)
     seed = training_config.get('seed', 1000)
+    use_mask_conditioning = training_config.get('use_mask_conditioning', False)
+    image_channels = 4 if use_mask_conditioning else 3
     # get task parameters
     is_sim = task_name[:4] == 'sim_'
     if is_sim:
@@ -87,6 +92,9 @@ def main(args):
                          'camera_names': camera_names,
                          'equipment_model': equipment_model,
                          }
+        if use_mask_conditioning:
+            policy_config['use_mask_conditioning'] = True
+            policy_config['image_channels'] = image_channels
     elif policy_class == 'CNNMLP':
         policy_config = {'lr': float(training_config.get('lr', 1e-5)), 'lr_backbone': lr_backbone, 'backbone' : backbone, 'num_queries': 1,
                          'camera_names': camera_names,}
@@ -107,10 +115,17 @@ def main(args):
         'temporal_agg': training_config.get('temporal_agg', False),
         'camera_names': camera_names,
         'real_robot': not is_sim,
+        'use_mask_conditioning': use_mask_conditioning,
+        'image_channels': image_channels,
+        'mask_ablation': mask_ablation,
+        'eval_output_dir': eval_output_dir,
+        'eval_target_id': eval_target_id,
     }
     if is_eval:
+        if not os.path.isdir(eval_output_dir):
+            os.makedirs(eval_output_dir, exist_ok=True)
         if clear_videos_before_eval:
-            clear_eval_videos(ckpt_dir)
+            clear_eval_videos(eval_output_dir)
         ckpt_names = [f'policy_best.ckpt']
         results = []
         for ckpt_name in ckpt_names:
@@ -122,7 +137,14 @@ def main(args):
         print()
         exit()
 
-    train_dataloader, val_dataloader, stats, _ = load_data(dataset_dir, num_episodes, camera_names, batch_size_train, batch_size_val)
+    train_dataloader, val_dataloader, stats, _ = load_data(
+        dataset_dir,
+        num_episodes,
+        camera_names,
+        batch_size_train,
+        batch_size_val,
+        use_mask_conditioning=use_mask_conditioning,
+    )
 
     # save dataset stats
     if not os.path.isdir(ckpt_dir):
@@ -160,14 +182,53 @@ def make_optimizer(policy_class, policy):
     return optimizer
 
 
-def get_image(ts, camera_names):
+def get_image(
+    ts,
+    camera_names,
+    use_mask_conditioning=False,
+    static_mask_dict=None,
+):
+    if not use_mask_conditioning:
+        # Keep the original ACT RGB preprocessing path for strict backward-compatibility.
+        curr_images = []
+        for cam_name in camera_names:
+            curr_image = rearrange(ts.observation['images'][cam_name], 'h w c -> c h w')
+            curr_images.append(curr_image)
+        curr_image = np.stack(curr_images, axis=0)
+        curr_image = torch.from_numpy(curr_image / 255.0).float().cuda().unsqueeze(0)
+        return curr_image
+
+    # ViPACT 固定策略：仅 cockpit 使用 oracle mask；没有 cockpit 时所有相机回退全零 mask。
+    active_mask_cameras = {'cockpit'} if 'cockpit' in camera_names else set()
+
     curr_images = []
     for cam_name in camera_names:
-        curr_image = rearrange(ts.observation['images'][cam_name], 'h w c -> c h w')
+        curr_image = rearrange(ts.observation['images'][cam_name], 'h w c -> c h w').astype(np.float32) / 255.0
+        if cam_name in active_mask_cameras:
+            if static_mask_dict is None or cam_name not in static_mask_dict:
+                raise ValueError(f'Missing static mask for camera {cam_name}')
+            static_mask = static_mask_dict[cam_name].astype(np.float32)
+        else:
+            static_mask = np.zeros(curr_image.shape[1:], dtype=np.float32)
+        curr_image = np.concatenate([curr_image, np.expand_dims(static_mask, axis=0)], axis=0)
         curr_images.append(curr_image)
     curr_image = np.stack(curr_images, axis=0)
-    curr_image = torch.from_numpy(curr_image / 255.0).float().cuda().unsqueeze(0)
+    curr_image = torch.from_numpy(curr_image).float().cuda().unsqueeze(0)
     return curr_image
+
+
+def apply_mask_ablation(static_mask_dict, mode, seed):
+    if mode == 'oracle':
+        return static_mask_dict
+    if mode == 'zero':
+        return {k: np.zeros_like(v, dtype=np.float32) for k, v in static_mask_dict.items()}
+    if mode == 'random':
+        rng = np.random.default_rng(seed)
+        return {
+            k: (rng.random(v.shape) > 0.5).astype(np.float32)
+            for k, v in static_mask_dict.items()
+        }
+    raise ValueError(f"Unsupported mask_ablation mode: {mode}. Expected one of ['oracle','zero','random'].")
 
 
 def clear_eval_videos(ckpt_dir):
@@ -180,6 +241,7 @@ def clear_eval_videos(ckpt_dir):
 def eval_bc(config, ckpt_name, save_episode=True, equipment_model='vx300s_bimanual'):
     set_seed(config['seed'])
     ckpt_dir = config['ckpt_dir']
+    eval_output_dir = config.get('eval_output_dir', ckpt_dir)
     state_dim = config['state_dim']
     real_robot = config['real_robot']
     policy_class = config['policy_class']
@@ -189,7 +251,15 @@ def eval_bc(config, ckpt_name, save_episode=True, equipment_model='vx300s_bimanu
     max_timesteps = config['episode_len']
     task_name = config['task_name']
     temporal_agg = config['temporal_agg']
+    use_mask_conditioning = config.get('use_mask_conditioning', False)
+    mask_ablation = config.get('mask_ablation', 'oracle')
+    eval_target_id = int(config.get('eval_target_id', 0))
     onscreen_cam = 'angle'
+    if task_name != 'sim_lifting_cube_with_complex_scene_scripted' and eval_target_id != 0:
+        print(
+            f"[Eval][WARN] eval.target_id={eval_target_id} is ignored for task={task_name}. "
+            "Fallback to default target."
+        )
 
     # load policy and stats
     ckpt_path = os.path.join(ckpt_dir, ckpt_name)
@@ -228,6 +298,8 @@ def eval_bc(config, ckpt_name, save_episode=True, equipment_model='vx300s_bimanu
     episode_returns = []
     highest_rewards = []
     rollout_logs = []
+    if use_mask_conditioning:
+        print(f'[Eval] mask_ablation={mask_ablation}')
     for rollout_id in range(num_rollouts):
         rollout_id += 0
         ### set task
@@ -238,12 +310,38 @@ def eval_bc(config, ckpt_name, save_episode=True, equipment_model='vx300s_bimanu
         elif 'sim_lifting_cube' in task_name:
             if 'excavator' in equipment_model:
                 BOX_POSE[0] = sample_box_pose_for_excavator()
+            elif 'with_complex_scene' in task_name:
+                BOX_POSE[0] = sample_complex_scene_pose_eval()
             else:
                 BOX_POSE[0] = sample_box_pose_eval()
         else:
             raise NotImplementedError
         init_pose = np.asarray(BOX_POSE[0], dtype=np.float64).copy()
+        target_geom_name = None
+        if task_name == 'sim_lifting_cube_with_complex_scene_scripted':
+            target_geom_name = resolve_target_geom_name(task_name, eval_target_id)
+            if hasattr(env, 'task'):
+                env.task.current_target_id = eval_target_id
+                env.task.target_geom_name = target_geom_name
         ts = env.reset()
+        static_mask_dict = None
+        if use_mask_conditioning:
+            active_mask_cameras = ['cockpit'] if 'cockpit' in camera_names else []
+            if len(active_mask_cameras) > 0:
+                static_mask_dict = build_oracle_static_mask_dict(
+                    env._physics,
+                    active_mask_cameras,
+                    task_name,
+                    target_geom_name=target_geom_name,
+                    allow_empty_masks=True,
+                )
+            else:
+                static_mask_dict = {}
+            static_mask_dict = apply_mask_ablation(
+                static_mask_dict,
+                mode=mask_ablation,
+                seed=int(config['seed']) + int(rollout_id),
+            )
 
         ### onscreen render
         if onscreen_render:
@@ -278,7 +376,12 @@ def eval_bc(config, ckpt_name, save_episode=True, equipment_model='vx300s_bimanu
                 qpos = pre_process(qpos_numpy)
                 qpos = torch.from_numpy(qpos).float().cuda().unsqueeze(0)
                 qpos_history[:, t] = qpos
-                curr_image = get_image(ts, camera_names)
+                curr_image = get_image(
+                    ts,
+                    camera_names,
+                    use_mask_conditioning=use_mask_conditioning,
+                    static_mask_dict=static_mask_dict,
+                )
 
                 ### query policy
                 if config['policy_class'] == "ACT":
@@ -346,7 +449,7 @@ def eval_bc(config, ckpt_name, save_episode=True, equipment_model='vx300s_bimanu
         if save_episode:
             success_tag = 'Success' if success == 1 else 'Failure'
             video_name = f'video{rollout_id}_r{int(episode_highest_reward)}_ret{episode_return:.2f}_{success_tag}.mp4'
-            save_videos(image_list, DT, video_path=os.path.join(ckpt_dir, video_name))
+            save_videos(image_list, DT, video_path=os.path.join(eval_output_dir, video_name))
 
     success_rate = np.mean(np.array(highest_rewards) == env_max_reward)
     avg_return = np.mean(episode_returns)
@@ -360,7 +463,7 @@ def eval_bc(config, ckpt_name, save_episode=True, equipment_model='vx300s_bimanu
 
     # save success rate to txt
     result_file_name = 'result_' + ckpt_name.split('.')[0] + '.txt'
-    with open(os.path.join(ckpt_dir, result_file_name), 'w') as f:
+    with open(os.path.join(eval_output_dir, result_file_name), 'w') as f:
         f.write(summary_str)
         f.write(repr(episode_returns))
         f.write('\n\n')
@@ -370,7 +473,7 @@ def eval_bc(config, ckpt_name, save_episode=True, equipment_model='vx300s_bimanu
         f.write(json.dumps(config, ensure_ascii=False, indent=2))
 
     rollout_log_file_name = 'result_' + ckpt_name.split('.')[0] + '_rollout_log.csv'
-    rollout_log_path = os.path.join(ckpt_dir, rollout_log_file_name)
+    rollout_log_path = os.path.join(eval_output_dir, rollout_log_file_name)
     with open(rollout_log_path, 'w', newline='') as csvfile:
         fieldnames = [
             'rollout_id', 'task_name', 'equipment_model',

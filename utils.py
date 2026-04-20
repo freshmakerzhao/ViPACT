@@ -2,18 +2,138 @@ import numpy as np
 import torch
 import os
 import h5py
+import mujoco
+import random
 from torch.utils.data import TensorDataset, DataLoader
 
 import IPython
 e = IPython.embed
 
+# 多目标任务要抓取的内容
+COMPLEX_SCENE_TARGET_GEOM_NAMES = [
+    'red_box',
+    'distractor_box_1',
+    'distractor_box_2',
+    'distractor_box_3',
+]
+
+
+def get_complex_scene_target_geom_names():
+    return list(COMPLEX_SCENE_TARGET_GEOM_NAMES)
+
+# 根据任务拿到对应的目标物体名称列表，单目标任务返回单元素列表，多目标任务返回多个元素的列表
+def resolve_target_geom_name(task_name, target_id=0):
+    target_id = int(target_id)
+    if 'sim_lifting_cube_with_complex_scene_scripted' == task_name:
+        target_names = get_complex_scene_target_geom_names()
+        if target_id < 0 or target_id >= len(target_names):
+            raise ValueError(
+                f'target_id={target_id} out of range for complex scene, '
+                f'expected [0, {len(target_names)-1}]'
+            )
+        return target_names[target_id] # 返回对应的抓取内容
+
+    # 对于单目标任务，忽略target_id，直接返回默认目标物体名称
+    default_targets = get_target_geom_names(task_name)
+    if len(default_targets) == 0:
+        raise ValueError(f'No default target geoms for task_name={task_name}')
+    if target_id != 0:
+        raise ValueError(
+            f'target_id={target_id} is only supported for complex scene lifting task, '
+            f'got task_name={task_name}'
+        )
+    return default_targets[0]
+
+
+# 根据任务拿到对应抓取内容
+def get_target_geom_names(task_name):
+    if task_name in ('sim_transfer_cube_scripted', 'sim_transfer_cube_human'):
+        return ['red_box']
+    if task_name in ('sim_lifting_cube_scripted'):
+        return ['red_box']
+    if task_name in ('sim_lifting_cube_with_complex_scene_scripted',):
+        # Backward-compatible default target for complex scene when target_id is not explicitly provided.
+        return ['red_box']
+    if task_name in ('sim_insertion_scripted', 'sim_insertion_human'):
+        return ['red_peg']
+    raise NotImplementedError(f'No target geom mapping for task_name={task_name}')
+
+# 根据抓取内容和camera_names构建oracle静态掩码字典，掩码基于MuJoCo分割信息生成，提供每个摄像头视角下目标物体的像素级位置感知，在整个episode中保持不变
+def build_oracle_static_mask_dict(
+    physics,
+    camera_names,
+    task_name,
+    height=480,
+    width=640,
+    target_geom_name=None,
+    allow_empty_masks=False,
+):
+    """Build per-camera static masks from MuJoCo segmentation (oracle)."""
+    # 拿到抓取内容
+    if target_geom_name is not None:
+        target_geom_names = [target_geom_name]
+    else:
+        target_geom_names = get_target_geom_names(task_name)
+
+    target_geom_ids = []
+    for geom_name in target_geom_names:
+        try:
+            target_geom_ids.append(physics.model.name2id(geom_name, 'geom'))
+        except (KeyError, ValueError):
+            continue
+    if len(target_geom_ids) == 0:
+        raise ValueError(
+            f'No valid target geom id found for task_name={task_name}, '
+            f'target_geom_name={target_geom_name}'
+        )
+    target_geom_ids = np.array(target_geom_ids, dtype=np.int32)
+    geom_type = int(mujoco.mjtObj.mjOBJ_GEOM)
+
+    static_mask_dict = {}
+    for cam_name in camera_names:
+        segmentation = physics.render(
+            height=height, width=width, camera_id=cam_name, segmentation=True
+        )
+        # dm_control segmentation format: [..., 0]=objid, [..., 1]=objtype
+        objid = segmentation[..., 0]
+        objtype = segmentation[..., 1]
+        mask = np.isin(objid, target_geom_ids) & (objtype == geom_type)
+        mask = mask.astype(np.float32)
+        if mask.sum() < 1:
+            if allow_empty_masks:
+                print(
+                    f'[WARN] Oracle mask is empty for camera={cam_name}, task={task_name}, '
+                    f'target_geom_name={target_geom_name}. Fallback to zero mask.'
+                )
+            else:
+                raise RuntimeError(
+                    f'Oracle mask is empty for camera={cam_name}, task={task_name}. '
+                    'Please verify target visibility or camera selection.'
+                )
+        static_mask_dict[cam_name] = mask
+
+    return static_mask_dict
+
+
 class EpisodicDataset(torch.utils.data.Dataset):
-    def __init__(self, episode_ids, dataset_dir, camera_names, norm_stats):
+    def __init__(
+        self,
+        episode_ids,
+        dataset_dir,
+        camera_names,
+        norm_stats,
+        use_mask_conditioning=False,
+    ):
         super(EpisodicDataset).__init__()
         self.episode_ids = episode_ids
         self.dataset_dir = dataset_dir
         self.camera_names = camera_names
         self.norm_stats = norm_stats
+        self.use_mask_conditioning = use_mask_conditioning # 是否使用掩码条件，掩码在整个episode中保持静态（即使动作和qpos在变化），以提供对物体位置的持续感知
+        # ViPACT 固定策略：仅 cockpit 使用 oracle mask；没有 cockpit 时回退全零 mask。
+        self.mask_camera_names = set()
+        if 'cockpit' in camera_names:
+            self.mask_camera_names.add('cockpit')
         self.is_sim = None
         self.__getitem__(0) # initialize self.is_sim
 
@@ -37,8 +157,28 @@ class EpisodicDataset(torch.utils.data.Dataset):
             qpos = root['/observations/qpos'][start_ts]
             qvel = root['/observations/qvel'][start_ts]
             image_dict = dict()
+            static_mask_dict = dict()
+            has_oracle_static_masks = (
+                'observations' in root and
+                'static_masks' in root['observations']
+            )
+            if self.use_mask_conditioning and len(self.mask_camera_names) > 0 and not has_oracle_static_masks:
+                raise KeyError(
+                    f'Dataset {dataset_path} is missing /observations/static_masks. '
+                    'Please regenerate dataset with record_sim_episodes.py to use oracle masks.'
+                )
             for cam_name in self.camera_names:
                 image_dict[cam_name] = root[f'/observations/images/{cam_name}'][start_ts]
+                if self.use_mask_conditioning:
+                    if cam_name in self.mask_camera_names:
+                        if cam_name not in root['/observations/static_masks']:
+                            raise KeyError(
+                                f'Dataset {dataset_path} has no static mask for camera {cam_name}'
+                            )
+                        static_mask_dict[cam_name] = root[f'/observations/static_masks/{cam_name}'][()]
+                    else:
+                        img_shape = image_dict[cam_name].shape
+                        static_mask_dict[cam_name] = np.zeros(img_shape[:2], dtype=np.float32)
             # get all actions after and including start_ts
             if is_sim:
                 action = root['/action'][start_ts:]
@@ -58,6 +198,12 @@ class EpisodicDataset(torch.utils.data.Dataset):
         for cam_name in self.camera_names:
             all_cam_images.append(image_dict[cam_name])
         all_cam_images = np.stack(all_cam_images, axis=0)
+        # 生成静态掩码字典，并为每个摄像头构建掩码列表
+        if self.use_mask_conditioning:
+            all_cam_masks = []
+            for cam_name in self.camera_names:
+                all_cam_masks.append(static_mask_dict[cam_name])
+            all_cam_masks = np.stack(all_cam_masks, axis=0)
 
         # construct observations
         image_data = torch.from_numpy(all_cam_images)
@@ -69,7 +215,11 @@ class EpisodicDataset(torch.utils.data.Dataset):
         image_data = torch.einsum('k h w c -> k c h w', image_data)
 
         # normalize image and change dtype to float
-        image_data = image_data / 255.0
+        image_data = image_data.float() / 255.0
+        # 将掩码作为额外的通道连接到图像数据中
+        if self.use_mask_conditioning:
+            mask_data = torch.from_numpy(all_cam_masks).float().unsqueeze(1)
+            image_data = torch.cat([image_data, mask_data], dim=1)
         action_data = (action_data - self.norm_stats["action_mean"]) / self.norm_stats["action_std"]
         qpos_data = (qpos_data - self.norm_stats["qpos_mean"]) / self.norm_stats["qpos_std"]
 
@@ -108,7 +258,14 @@ def get_norm_stats(dataset_dir, num_episodes):
     return stats
 
 
-def load_data(dataset_dir, num_episodes, camera_names, batch_size_train, batch_size_val):
+def load_data(
+    dataset_dir,
+    num_episodes,
+    camera_names,
+    batch_size_train,
+    batch_size_val,
+    use_mask_conditioning=False,
+):
     print(f'\nData from: {dataset_dir}\n')
     # obtain train test split
     train_ratio = 0.8
@@ -120,8 +277,20 @@ def load_data(dataset_dir, num_episodes, camera_names, batch_size_train, batch_s
     norm_stats = get_norm_stats(dataset_dir, num_episodes)
 
     # construct dataset and dataloader
-    train_dataset = EpisodicDataset(train_indices, dataset_dir, camera_names, norm_stats)
-    val_dataset = EpisodicDataset(val_indices, dataset_dir, camera_names, norm_stats)
+    train_dataset = EpisodicDataset(
+        train_indices,
+        dataset_dir,
+        camera_names,
+        norm_stats,
+        use_mask_conditioning=use_mask_conditioning,
+    )
+    val_dataset = EpisodicDataset(
+        val_indices,
+        dataset_dir,
+        camera_names,
+        norm_stats,
+        use_mask_conditioning=use_mask_conditioning,
+    )
     train_dataloader = DataLoader(train_dataset, batch_size=batch_size_train, shuffle=True, pin_memory=True, num_workers=1, prefetch_factor=1)
     val_dataloader = DataLoader(val_dataset, batch_size=batch_size_val, shuffle=True, pin_memory=True, num_workers=1, prefetch_factor=1)
 
@@ -152,6 +321,60 @@ def sample_box_pose_eval():
 
     cube_quat = np.array([1, 0, 0, 0])
     return np.concatenate([cube_position, cube_quat])
+
+# 生成复杂场景的目标和干扰物位姿，确保它们之间有足够的距离以避免重叠
+def _sample_cube_pose_from_range(x_range, y_range, z_range):
+    ranges = np.vstack([x_range, y_range, z_range])
+    cube_position = np.random.uniform(ranges[:, 0], ranges[:, 1])
+    cube_quat = np.array([1, 0, 0, 0])
+    return np.concatenate([cube_position, cube_quat])
+
+# 在复杂场景中采样目标和干扰物位姿，确保它们之间有足够的距离以避免重叠
+def _sample_non_overlapping_cube_pose(existing_xyz_list, x_range, y_range, z_range, min_dist=0.07, max_trials=2000):
+    for _ in range(max_trials):
+        pose = _sample_cube_pose_from_range(x_range, y_range, z_range)
+        xyz = pose[:3]
+        if all(np.linalg.norm(xyz - prev_xyz) >= min_dist for prev_xyz in existing_xyz_list):
+            return pose
+    raise RuntimeError('Failed to sample non-overlapping cube pose in complex scene')
+
+# 生成复杂场景的目标和干扰物位姿，确保它们之间有足够的距离以避免重叠
+def sample_complex_scene_pose():
+    """Sample target + 3 distractor cube poses for complex lifting scene.
+
+    Return shape: (28,) = 4 boxes * (xyz + quat).
+    Order is fixed to keep scripted policy and replay logic aligned:
+    [red_box, distractor_box_1, distractor_box_2, distractor_box_3].
+    """
+    # Expand target sampling area for better spatial generalization.
+    # Keep z fixed to table height and keep overlap checks via min_dist below.
+    target_x_range = [-0.05, 0.25]
+    target_y_range = [0.36, 0.68]
+    z_range = [0.05, 0.05]
+    target_pose = _sample_cube_pose_from_range(target_x_range, target_y_range, z_range)
+
+    distractor_x_range = [-0.12, 0.32]
+    distractor_y_range = [0.38, 0.70]
+
+    xyz_list = [target_pose[:3]]
+    distractors = []
+    for _ in range(3):
+        d_pose = _sample_non_overlapping_cube_pose(
+            xyz_list,
+            distractor_x_range,
+            distractor_y_range,
+            z_range,
+            min_dist=0.07,
+        )
+        distractors.append(d_pose)
+        xyz_list.append(d_pose[:3])
+
+    return np.concatenate([target_pose] + distractors)
+
+# 评估时的复杂场景采样，保持与训练分布一致
+def sample_complex_scene_pose_eval():
+    # Keep eval distribution aligned with train for current MVP.
+    return sample_complex_scene_pose()
 
 
 def sample_box_pose_eval_ring():
@@ -228,5 +451,14 @@ def detach_dict(d):
     return new_d
 
 def set_seed(seed):
+    random.seed(seed)
     torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    try:
+        torch.use_deterministic_algorithms(True)
+    except Exception:
+        pass
     np.random.seed(seed)

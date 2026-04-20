@@ -13,12 +13,25 @@ class ACTPolicy(nn.Module):
         self.model = model # CVAE decoder
         self.optimizer = optimizer
         self.kl_weight = args_override['kl_weight']
+        self.image_channels = int(args_override.get('image_channels', 3))
+        if self.image_channels not in (3, 4):
+            raise ValueError(f'ACTPolicy only supports image_channels in {{3,4}}, got {self.image_channels}')
+        # 设置图像归一化的均值和标准差，根据图像通道数进行调整
+        if self.image_channels == 4:
+            self.image_mean = [0.485, 0.456, 0.406, 0.0]
+            self.image_std = [0.229, 0.224, 0.225, 1.0]
+        else:
+            self.image_mean = [0.485, 0.456, 0.406]
+            self.image_std = [0.229, 0.224, 0.225]
         print(f'KL Weight {self.kl_weight}')
 
     def __call__(self, qpos, image, actions=None, is_pad=None):
         env_state = None
-        normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                                         std=[0.229, 0.224, 0.225])
+        if image.shape[2] != self.image_channels:
+            raise ValueError(
+                f'ACTPolicy expected image channels={self.image_channels}, got {image.shape[2]}'
+            )
+        normalize = transforms.Normalize(mean=self.image_mean, std=self.image_std)
         image = normalize(image)
         if actions is not None: # training time
             actions = actions[:, :self.model.num_queries]

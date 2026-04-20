@@ -10,8 +10,9 @@ e = IPython.embed
 
 
 class BasePolicy:
-    def __init__(self, inject_noise=False):
+    def __init__(self, inject_noise=False, target_id=0):
         self.inject_noise = inject_noise
+        self.target_id = int(target_id)
         self.step_count = 0
         self.left_trajectory = None
         self.right_trajectory = None
@@ -127,8 +128,21 @@ class LiftingAndMovingPolicy(BasePolicy):
     def generate_trajectory(self, ts_first):
         # 读取初始 mocap 位姿与箱体位姿，生成搬运轨迹
         init_mocap_pose_right = ts_first.observation['mocap_pose_right']
+        # 获取所有目标物体位姿
+        env_state = np.array(ts_first.observation['env_state']).reshape(-1)
+        if env_state.size < 7:
+            raise ValueError(f'Unexpected env_state size={env_state.size}, expected >=7')
+        object_count = max(1, env_state.size // 7) # 每个物体占7维（xyz+quat），计算物体数量
+        target_id = self.target_id
+        if target_id < 0 or target_id >= object_count:
+            print(
+                f'[WARN] target_id={target_id} out of range for object_count={object_count}, '
+                'fallback to target_id=0'
+            )
+            target_id = 0
 
-        box_info = np.array(ts_first.observation['env_state']) # 获取箱体位姿,箱体是7维的，分别是xyz+quat。箱体在此处表示被抓取的物体
+        pose_start = target_id * 7
+        box_info = env_state[pose_start:pose_start + 7] # 获取目标方块位姿(xyz+quat)
         box_xyz = box_info[:3]
         box_quat = box_info[3:]
         # print(f"Generate trajectory for {box_xyz=}")
@@ -296,4 +310,3 @@ if __name__ == '__main__':
     # test_task_name = 'sim_lifting_cube_scripted'
     # equipment_model="vx300s_single"
     test_policy(test_task_name, equipment_model)
-

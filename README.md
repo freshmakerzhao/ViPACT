@@ -24,6 +24,69 @@ You can find all scripted/human demo for simulated environments [here](https://d
 - ``utils.py`` Utils such as data loading and helper functions
 - ``visualize_episodes.py`` Save videos from a .hdf5 dataset
 
+### ViPACT Integration (Current Project)
+
+- `interfaces/`: shared data contracts across modules.
+- `multimodal_brain/`: LLM parser + GroundingDINO detector + SAM2 mask generator.
+- `policy_runtime/`: ACT runtime wrapper for step-level inference.
+- `pipeline/`: unified orchestration (`BrainToPolicyPipeline`).
+- `vipact_console.py`: unified console entry (single-step / full-flow / interactive).
+- `interactive_app/passive_viewer_console.py`: passive MuJoCo viewer interactive runner.
+
+#### ViPACT Console (Only 3 Supported Functionalities)
+
+1. Single-step module invocation (`llm` / `dino` / `sam` / `act`)
+2. One-line full pipeline (`full`)
+3. Interactive full pipeline with terminal input + realtime MuJoCo viewer (`interactive`)
+
+Examples:
+
+```bash
+# 1) Single-step: LLM parse
+python vipact_console.py llm --instruction "抓左侧第二个红色方块"
+
+# 1) Single-step: DINO detect
+python vipact_console.py dino \
+  --image notes/dino_tiny_debug_en/dino_tiny_ep0_cockpit_rgb.png \
+  --query "a red cube" \
+  --confidence 0.5 \
+  --output-json notes/dino_tiny_debug_en/dino_detection_result.json
+
+# 1) Single-step: SAM from selected box json
+python vipact_console.py sam \
+  --image notes/dino_tiny_debug_en/dino_tiny_ep0_cockpit_rgb.png \
+  --box-json notes/dino_tiny_debug_en/llm_parse_and_select_result.json \
+  --output-mask notes/all_process/sam2_mask.png
+
+# 1) Single-step: ACT inference with manual mask
+python vipact_console.py act \
+  --config demo_models/no_temporal_agg/eval_config.yaml \
+  --mask-path notes/all_process/sam2_mask.png \
+  --episode-id 0 \
+  --output-dir notes/all_process/over \
+  --save-video
+
+# 2) One-line full flow
+python vipact_console.py full \
+  --config demo_models/no_temporal_agg/eval_config.yaml \
+  --instruction "抓最下面的红色方块" \
+  --episode-id 0 \
+  --output-dir notes/vipact_console_runs \
+  --save-video
+
+# 3) Interactive full flow (IDLE -> THINKING -> EXECUTING, no temporal_agg model)
+python vipact_console.py interactive \
+  --config demo_models/no_temporal_agg/eval_config.yaml \
+  --output-dir notes/passive_viewer_runs \
+  --episode-id-base 0
+
+# 3) Interactive full flow (temporal_agg model)
+python vipact_console.py interactive \
+  --config demo_models/temporal_agg/eval_config.yaml \
+  --output-dir notes/passive_viewer_runs \
+  --episode-id-base 0
+```
+
 
 ### Installation
 
@@ -86,4 +149,3 @@ You can also add ``--onscreen_render`` to see real-time rendering during evaluat
 
 For real-world data where things can be harder to model, train for at least 5000 epochs or 3-4 times the length after the loss has plateaued.
 Please refer to [tuning tips](https://docs.google.com/document/d/1FVIZfoALXg_ZkYKaYVh-qOlaXveq5CtvJHXkY25eYhs/edit?usp=sharing) for more info.
-
