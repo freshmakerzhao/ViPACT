@@ -60,7 +60,7 @@ python vipact_console.py sam \
 
 # 1) Single-step: ACT inference with manual mask
 python vipact_console.py act \
-  --config configs/fairino5_single_26041508_with_complex_scene_cf_mask/03_eval.yaml \
+  --config demo_models/no_temporal_agg/eval_config.yaml \
   --mask-path notes/all_process/sam2_mask.png \
   --episode-id 0 \
   --output-dir notes/all_process/over \
@@ -68,15 +68,21 @@ python vipact_console.py act \
 
 # 2) One-line full flow
 python vipact_console.py full \
-  --config configs/fairino5_single_26041508_with_complex_scene_cf_mask/03_eval.yaml \
+  --config demo_models/no_temporal_agg/eval_config.yaml \
   --instruction "抓最下面的红色方块" \
   --episode-id 0 \
   --output-dir notes/vipact_console_runs \
   --save-video
 
-# 3) Interactive full flow (IDLE -> THINKING -> EXECUTING)
+# 3) Interactive full flow (IDLE -> THINKING -> EXECUTING, no temporal_agg model)
 python vipact_console.py interactive \
-  --config configs/fairino5_single_26041508_with_complex_scene_cf_mask/03_eval.yaml \
+  --config demo_models/no_temporal_agg/eval_config.yaml \
+  --output-dir notes/passive_viewer_runs \
+  --episode-id-base 0
+
+# 3) Interactive full flow (temporal_agg model)
+python vipact_console.py interactive \
+  --config demo_models/temporal_agg/eval_config.yaml \
   --output-dir notes/passive_viewer_runs \
   --episode-id-base 0
 ```

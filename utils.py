@@ -346,11 +346,15 @@ def sample_complex_scene_pose():
     Order is fixed to keep scripted policy and replay logic aligned:
     [red_box, distractor_box_1, distractor_box_2, distractor_box_3].
     """
-    target_pose = sample_box_pose()
+    # Expand target sampling area for better spatial generalization.
+    # Keep z fixed to table height and keep overlap checks via min_dist below.
+    target_x_range = [-0.05, 0.25]
+    target_y_range = [0.36, 0.68]
+    z_range = [0.05, 0.05]
+    target_pose = _sample_cube_pose_from_range(target_x_range, target_y_range, z_range)
 
     distractor_x_range = [-0.12, 0.32]
     distractor_y_range = [0.38, 0.70]
-    z_range = [0.05, 0.05]
 
     xyz_list = [target_pose[:3]]
     distractors = []

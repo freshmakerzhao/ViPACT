@@ -1,0 +1,55 @@
+
+Success rate: 1.0
+Average return: 696.3
+
+Reward >= 0: 50/50 = 100.0%
+Reward >= 1: 50/50 = 100.0%
+Reward >= 2: 50/50 = 100.0%
+Reward >= 3: 50/50 = 100.0%
+Reward >= 4: 50/50 = 100.0%
+[np.int64(698), np.int64(692), np.int64(706), np.int64(701), np.int64(702), np.int64(703), np.int64(699), np.int64(702), np.int64(706), np.int64(704), np.int64(692), np.int64(694), np.int64(678), np.int64(702), np.int64(695), np.int64(691), np.int64(693), np.int64(692), np.int64(691), np.int64(703), np.int64(696), np.int64(690), np.int64(704), np.int64(698), np.int64(697), np.int64(687), np.int64(696), np.int64(701), np.int64(705), np.int64(700), np.int64(690), np.int64(701), np.int64(704), np.int64(698), np.int64(705), np.int64(690), np.int64(687), np.int64(700), np.int64(690), np.int64(695), np.int64(688), np.int64(704), np.int64(696), np.int64(689), np.int64(694), np.int64(685), np.int64(688), np.int64(701), np.int64(698), np.int64(694)]
+
+[np.int64(4), np.int64(4), np.int64(4), np.int64(4), np.int64(4), np.int64(4), np.int64(4), np.int64(4), np.int64(4), np.int64(4), np.int64(4), np.int64(4), np.int64(4), np.int64(4), np.int64(4), np.int64(4), np.int64(4), np.int64(4), np.int64(4), np.int64(4), np.int64(4), np.int64(4), np.int64(4), np.int64(4), np.int64(4), np.int64(4), np.int64(4), np.int64(4), np.int64(4), np.int64(4), np.int64(4), np.int64(4), np.int64(4), np.int64(4), np.int64(4), np.int64(4), np.int64(4), np.int64(4), np.int64(4), np.int64(4), np.int64(4), np.int64(4), np.int64(4), np.int64(4), np.int64(4), np.int64(4), np.int64(4), np.int64(4), np.int64(4), np.int64(4)]
+
+run_config:
+{
+  "num_epochs": 8000,
+  "ckpt_dir": "./ckpts/26041701_with_complex_scene_cf_mask_longrun",
+  "episode_len": 400,
+  "state_dim": 7,
+  "lr": "5e-6",
+  "policy_class": "ACT",
+  "onscreen_render": false,
+  "policy_config": {
+    "lr": 5e-06,
+    "num_queries": 100,
+    "kl_weight": 10,
+    "hidden_dim": 512,
+    "dim_feedforward": 3200,
+    "lr_backbone": 1e-05,
+    "backbone": "resnet18",
+    "enc_layers": 4,
+    "dec_layers": 7,
+    "nheads": 8,
+    "camera_names": [
+      "top",
+      "cockpit"
+    ],
+    "equipment_model": "fairino5_single",
+    "use_mask_conditioning": true,
+    "image_channels": 4
+  },
+  "task_name": "sim_lifting_cube_with_complex_scene_scripted",
+  "seed": 1000,
+  "temporal_agg": true,
+  "camera_names": [
+    "top",
+    "cockpit"
+  ],
+  "real_robot": false,
+  "use_mask_conditioning": true,
+  "image_channels": 4,
+  "mask_ablation": "oracle",
+  "eval_output_dir": "./ckpts/26041701_with_complex_scene_cf_mask_longrun/eval_target_0",
+  "eval_target_id": 0
+}

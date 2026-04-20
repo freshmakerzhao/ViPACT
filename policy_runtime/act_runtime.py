@@ -45,6 +45,7 @@ class ACTPolicyRuntime:
     num_queries: int = 1
     temporal_agg: bool = False
     _cached_actions: Optional[torch.Tensor] = field(default=None, init=False, repr=False)
+    _action_chunk_history: list[tuple[int, torch.Tensor]] = field(default_factory=list, init=False, repr=False)
 
     @classmethod
     def from_checkpoint(
@@ -120,6 +121,7 @@ class ACTPolicyRuntime:
 
     def reset_episode(self) -> None:
         self._cached_actions = None
+        self._action_chunk_history = []
 
     @torch.inference_mode()
     def step(self, step_input: PolicyStepInput) -> PolicyStepOutput:
@@ -130,9 +132,35 @@ class ACTPolicyRuntime:
         )
 
         if self.temporal_agg:
-            # Keep behavior explicit for now; can be implemented later if needed.
-            all_actions = self.policy(qpos_tensor, image_tensor)
-            raw_action = all_actions[:, 0]
+            # Match ACT eval temporal aggregation logic in imitate_episodes.py:
+            # - query policy every step
+            # - keep all predicted chunks
+            # - for current step, aggregate all available predictions with exp decay
+            step_id = int(step_input.step_id)
+            all_actions = self.policy(qpos_tensor, image_tensor).squeeze(0)  # [num_queries, action_dim]
+            self._action_chunk_history.append((step_id, all_actions))
+
+            candidates = []
+            for start_t, chunk in self._action_chunk_history:
+                offset = step_id - int(start_t)
+                if 0 <= offset < int(chunk.shape[0]):
+                    candidates.append(chunk[offset])
+
+            # Keep only chunks that may still contribute in future steps.
+            max_q = int(all_actions.shape[0])
+            self._action_chunk_history = [
+                (start_t, chunk)
+                for (start_t, chunk) in self._action_chunk_history
+                if (int(start_t) + int(chunk.shape[0])) > step_id
+            ]
+
+            if len(candidates) == 0:
+                raw_action = all_actions[0].unsqueeze(0)
+            else:
+                actions_for_curr_step = torch.stack(candidates, dim=0)  # [N, action_dim]
+                exp_weights = torch.exp(-0.01 * torch.arange(len(candidates), device=self.device, dtype=torch.float32))
+                exp_weights = exp_weights / exp_weights.sum()
+                raw_action = (actions_for_curr_step * exp_weights.unsqueeze(1)).sum(dim=0, keepdim=True)  # [1, action_dim]
         else:
             # Match ACT rollout logic:
             # - query policy every num_queries steps

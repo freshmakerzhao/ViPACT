@@ -23,11 +23,8 @@ EVAL_CFG_NAME="03_eval.yaml"
 
 # Put your config directories here.
 CONFIG_DIRS=(
-  "/home/zhaoshuai/workspace_act/ViPACT/configs/fairino5_single_26041502_with_complex_scene"
-  "/home/zhaoshuai/workspace_act/ViPACT/configs/fairino5_single_26041503_with_complex_scene_dual_no_mask"
-  "/home/zhaoshuai/workspace_act/ViPACT/configs/fairino5_single_26041504_with_complex_scene_top_no_mask"
-  "/home/zhaoshuai/workspace_act/ViPACT/configs/fairino5_single_26041505_with_complex_scene_cockpit_mask"
-  "/home/zhaoshuai/workspace_act/ViPACT/configs/fairino5_single_26041506_with_complex_scene_cockpit_no_mask"
+  "/home/zhaoshuai/workspace_act/ViPACT/configs/fairino5_single_26041701_with_complex_scene_cf_mask_longrun"
+  "/home/zhaoshuai/workspace_act/ViPACT/configs/fairino5_single_26041702_with_complex_scene_cf_mask_longrun"
 )
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
