@@ -1,0 +1,50 @@
+# ViPACT training requirements for an existing conda env.
+#
+# Recommended:
+#   conda create -n vipact_train python=3.10 -y
+#   conda activate vipact_train
+#   pip install -r requirements_vipact_train.txt
+#
+# Run the MHA sanity check in conda_env_vipact_train.yaml before training.
+#
+# RTX 50-series / Blackwell GPUs such as RTX 5070 Ti require a PyTorch wheel
+# compiled for sm_120. Use the official cu128 index explicitly; the default
+# PyPI torch wheel may report CUDA availability but still only include kernels
+# up to sm_90.
+
+--extra-index-url https://download.pytorch.org/whl/cu128
+
+torch==2.7.1+cu128
+torchvision==0.22.1+cu128
+numpy==1.26.4
+h5py==3.15.1
+PyYAML==6.0.3
+einops==0.8.2
+tqdm==4.67.3
+matplotlib==3.10.8
+opencv-python==4.10.0.84
+ipython==8.37.0
+pandas==2.3.3
+scipy==1.15.3
+pyquaternion==0.9.9
+gym==0.26.2
+gymnasium==1.2.3
+mujoco==3.2.5
+dm_control==1.0.25
+dm-env==1.6
+dm-tree==0.1.9
+glfw==2.10.0
+PyOpenGL==3.1.10
+rospkg==1.6.1
+catkin-pkg==1.1.0
+pexpect==4.9.0
+tensorboard==2.20.0
+transformers==5.5.4
+accelerate==1.13.0
+safetensors==0.7.0
+tokenizers==0.22.2
+huggingface_hub==1.10.2
+stable_baselines3==2.7.1
+rich==15.0.0
+typer==0.24.1
+click==8.3.2

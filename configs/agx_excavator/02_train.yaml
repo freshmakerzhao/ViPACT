@@ -1,0 +1,43 @@
+# ==================== 任务配置 ====================
+task:
+  name: sim_agx_excavation_teleop
+  dataset_dir: /home/zhaoshuai/workspace_excavator/excavator_testbed/data/agx_teleop_v1
+  # Match excavator_testbed/testbed/configs/act_agx_v1.yaml.
+  num_episodes: 30
+  episode_len: 1000
+  camera_names:
+    - fpv
+
+# ==================== 设备配置 ====================
+equipment:
+  model: excavator_simple
+
+# ==================== 训练配置 ====================
+training:
+  policy_class: ACT
+  batch_size: 4
+  num_epochs: 2000
+  # Match excavator_testbed train.val_every: run validation every 5 epochs.
+  val_every: 5
+  lr: 1e-5
+  seed: 0
+  temporal_agg: false
+
+# ==================== ACT策略参数 ====================
+act:
+  kl_weight: 10
+  chunk_size: 100
+  hidden_dim: 512
+  dim_feedforward: 3200
+
+# ==================== ViPACT配置 ====================
+vipact:
+  # testbed AGX HDF5 currently has no /observations/static_masks.
+  use_mask_conditioning: false
+
+# ==================== 输出配置 ====================
+output:
+  ckpt_dir: ./ckpts/agx_excavation_vipact
+# ==================== 渲染配置 ====================
+render:
+  onscreen_render: false

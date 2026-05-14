@@ -28,18 +28,24 @@
             <inertial pos="0 0 0" mass="0.05" diaginertia="0.002 0.002 0.002" />
             <geom condim="4" friction="2.0 0.05 0.0001" solimp="0.9 0.95 0.001"
                   solref="0.002 1" pos="0 0 0" size="0.02 0.02 0.02" type="box" name="distractor_box_1" rgba="1 0 0 1" />
+            <!-- <geom condim="4" friction="2.0 0.05 0.0001" solimp="0.9 0.95 0.001"
+                  solref="0.002 1" pos="0 0 0" size="0.02 0.02 0.02" type="box" name="distractor_box_1" rgba="0.1 0.35 1.0 1" /> -->
         </body>
         <body name="distractor_box_2_body" pos="0.30 0.48 0.05">
             <joint name="distractor_box_2_joint" type="free" frictionloss="0.01" />
             <inertial pos="0 0 0" mass="0.05" diaginertia="0.002 0.002 0.002" />
             <geom condim="4" friction="2.0 0.05 0.0001" solimp="0.9 0.95 0.001"
                   solref="0.002 1" pos="0 0 0" size="0.02 0.02 0.02" type="box" name="distractor_box_2" rgba="1 0 0 1" />
+            <!-- <geom condim="4" friction="2.0 0.05 0.0001" solimp="0.9 0.95 0.001"
+                  solref="0.002 1" pos="0 0 0" size="0.02 0.02" type="cylinder" name="distractor_box_2" rgba="0.1 0.75 0.2 1" /> -->
         </body>
         <body name="distractor_box_3_body" pos="0.30 0.66 0.05">
             <joint name="distractor_box_3_joint" type="free" frictionloss="0.01" />
             <inertial pos="0 0 0" mass="0.05" diaginertia="0.002 0.002 0.002" />
             <geom condim="4" friction="2.0 0.05 0.0001" solimp="0.9 0.95 0.001"
                   solref="0.002 1" pos="0 0 0" size="0.02 0.02 0.02" type="box" name="distractor_box_3" rgba="1 0 0 1" />
+            <!-- <geom condim="4" friction="2.0 0.05 0.0001" solimp="0.9 0.95 0.001"
+                  solref="0.002 1" pos="0 0 0" size="0.02 0.02" type="cylinder" name="distractor_box_3" rgba="1.0 0.82 0.05 1" /> -->
         </body>
         <body name="tray" pos="0.4 0.85 0">
             <geom type="cylinder" size="0.08 0.01" rgba="0.8 0.8 0.2 1" name="yellow_tray"/>

@@ -48,6 +48,7 @@ def main(args):
     mask_ablation = yaml_config.get('eval', {}).get('mask_ablation', 'oracle') # 验证时的mask消融方式，默认不消融（oracle），可选项包括移除（zero）和随机噪声（random）
     eval_output_dir = yaml_config.get('eval', {}).get('output_dir', ckpt_dir) # 评估产物输出目录，默认与ckpt目录一致
     eval_target_id = int(yaml_config.get('eval', {}).get('target_id', 0)) # 复杂场景评估目标，默认0以保持旧行为
+    eval_mask_target_id = int(yaml_config.get('eval', {}).get('mask_target_id', eval_target_id)) # mask 指向目标，默认与评估目标一致
     equipment_model = get_equipment_model(config_path)
     seed = training_config.get('seed', 1000)
     use_mask_conditioning = training_config.get('use_mask_conditioning', False)
@@ -103,6 +104,7 @@ def main(args):
 
     config = {
         'num_epochs': num_epochs,
+        'val_every': int(training_config.get('val_every', 1)),
         'ckpt_dir': ckpt_dir,
         'episode_len': episode_len,
         'state_dim': state_dim,
@@ -120,6 +122,7 @@ def main(args):
         'mask_ablation': mask_ablation,
         'eval_output_dir': eval_output_dir,
         'eval_target_id': eval_target_id,
+        'eval_mask_target_id': eval_mask_target_id,
     }
     if is_eval:
         if not os.path.isdir(eval_output_dir):
@@ -254,11 +257,17 @@ def eval_bc(config, ckpt_name, save_episode=True, equipment_model='vx300s_bimanu
     use_mask_conditioning = config.get('use_mask_conditioning', False)
     mask_ablation = config.get('mask_ablation', 'oracle')
     eval_target_id = int(config.get('eval_target_id', 0))
+    eval_mask_target_id = int(config.get('eval_mask_target_id', eval_target_id))
     onscreen_cam = 'angle'
     if task_name != 'sim_lifting_cube_with_complex_scene_scripted' and eval_target_id != 0:
         print(
             f"[Eval][WARN] eval.target_id={eval_target_id} is ignored for task={task_name}. "
             "Fallback to default target."
+        )
+    if task_name != 'sim_lifting_cube_with_complex_scene_scripted' and eval_mask_target_id != eval_target_id:
+        print(
+            f"[Eval][WARN] eval.mask_target_id={eval_mask_target_id} is ignored for task={task_name}. "
+            "Mask target can differ from env target only in complex scene lifting."
         )
 
     # load policy and stats
@@ -300,6 +309,7 @@ def eval_bc(config, ckpt_name, save_episode=True, equipment_model='vx300s_bimanu
     rollout_logs = []
     if use_mask_conditioning:
         print(f'[Eval] mask_ablation={mask_ablation}')
+        print(f'[Eval] target_id={eval_target_id}, mask_target_id={eval_mask_target_id}')
     for rollout_id in range(num_rollouts):
         rollout_id += 0
         ### set task
@@ -318,8 +328,10 @@ def eval_bc(config, ckpt_name, save_episode=True, equipment_model='vx300s_bimanu
             raise NotImplementedError
         init_pose = np.asarray(BOX_POSE[0], dtype=np.float64).copy()
         target_geom_name = None
+        mask_target_geom_name = None
         if task_name == 'sim_lifting_cube_with_complex_scene_scripted':
             target_geom_name = resolve_target_geom_name(task_name, eval_target_id)
+            mask_target_geom_name = resolve_target_geom_name(task_name, eval_mask_target_id)
             if hasattr(env, 'task'):
                 env.task.current_target_id = eval_target_id
                 env.task.target_geom_name = target_geom_name
@@ -332,7 +344,7 @@ def eval_bc(config, ckpt_name, save_episode=True, equipment_model='vx300s_bimanu
                     env._physics,
                     active_mask_cameras,
                     task_name,
-                    target_geom_name=target_geom_name,
+                    target_geom_name=mask_target_geom_name,
                     allow_empty_masks=True,
                 )
             else:
@@ -443,6 +455,10 @@ def eval_bc(config, ckpt_name, save_episode=True, equipment_model='vx300s_bimanu
             'episode_highest_reward': float(episode_highest_reward),
             'env_max_reward': float(env_max_reward),
             'success': success,
+            'target_id': int(eval_target_id),
+            'mask_target_id': int(eval_mask_target_id),
+            'target_geom_name': target_geom_name,
+            'mask_target_geom_name': mask_target_geom_name,
         })
         print(f'Rollout {rollout_id}\n{episode_return=}, {episode_highest_reward=}, {env_max_reward=}, Success: {episode_highest_reward==env_max_reward}')
 
@@ -478,7 +494,8 @@ def eval_bc(config, ckpt_name, save_episode=True, equipment_model='vx300s_bimanu
         fieldnames = [
             'rollout_id', 'task_name', 'equipment_model',
             'init_x', 'init_y', 'init_z', 'init_pose',
-            'episode_return', 'episode_highest_reward', 'env_max_reward', 'success'
+            'episode_return', 'episode_highest_reward', 'env_max_reward', 'success',
+            'target_id', 'mask_target_id', 'target_geom_name', 'mask_target_geom_name'
         ]
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
         writer.writeheader()
@@ -501,6 +518,7 @@ def forward_pass(data, policy):
 
 def train_bc(train_dataloader, val_dataloader, config):
     num_epochs = config['num_epochs']
+    val_every = max(1, int(config.get('val_every', 1)))
     ckpt_dir = config['ckpt_dir']
     seed = config['seed']
     policy_class = config['policy_class']
@@ -519,24 +537,33 @@ def train_bc(train_dataloader, val_dataloader, config):
     for epoch in tqdm(range(num_epochs)):
         print(f'\nEpoch {epoch}')
         # validation
-        with torch.inference_mode():
-            policy.eval()
-            epoch_dicts = []
-            for batch_idx, data in enumerate(val_dataloader):
-                forward_dict = forward_pass(data, policy)
-                epoch_dicts.append(forward_dict)
-            epoch_summary = compute_dict_mean(epoch_dicts)
-            validation_history.append(epoch_summary)
+        should_validate = (
+            epoch == 0
+            or epoch % val_every == 0
+            or epoch == num_epochs - 1
+            or best_ckpt_info is None
+        )
+        if should_validate:
+            with torch.inference_mode():
+                policy.eval()
+                epoch_dicts = []
+                for batch_idx, data in enumerate(val_dataloader):
+                    forward_dict = forward_pass(data, policy)
+                    epoch_dicts.append(forward_dict)
+                epoch_summary = compute_dict_mean(epoch_dicts)
+                validation_history.append(epoch_summary)
 
-            epoch_val_loss = epoch_summary['loss']
-            if epoch_val_loss < min_val_loss:
-                min_val_loss = epoch_val_loss
-                best_ckpt_info = (epoch, min_val_loss, deepcopy(policy.state_dict()))
-        print(f'Val loss:   {epoch_val_loss:.5f}')
-        summary_string = ''
-        for k, v in epoch_summary.items():
-            summary_string += f'{k}: {v.item():.3f} '
-        print(summary_string)
+                epoch_val_loss = epoch_summary['loss']
+                if epoch_val_loss < min_val_loss:
+                    min_val_loss = epoch_val_loss
+                    best_ckpt_info = (epoch, min_val_loss, deepcopy(policy.state_dict()))
+            print(f'Val loss:   {epoch_val_loss:.5f}')
+            summary_string = ''
+            for k, v in epoch_summary.items():
+                summary_string += f'{k}: {v.item():.3f} '
+            print(summary_string)
+        else:
+            print(f'Val loss:   skipped (val_every={val_every})')
 
         # training
         policy.train()

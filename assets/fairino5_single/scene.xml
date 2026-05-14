@@ -1,6 +1,10 @@
 <mujocoinclude>
     <!-- 桌子 -->
     <asset>
+        <!-- 背景色 -->
+        <!-- <texture type="skybox" builtin="gradient"
+                 rgb1="0.886 0.886 0.886" rgb2="0.886 0.886 0.886"
+                 width="512" height="512"/> -->
         <mesh file="../base/tabletop.stl" name="tabletop" scale="0.001 0.001 0.001"/>
     </asset>
     <!-- 可视化配置，如渲染质量、头灯等 -->

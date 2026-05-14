@@ -52,6 +52,7 @@ def get_training_config(config_path):
             'policy_class': training.get('policy_class', 'ACT'),
             'batch_size': training.get('batch_size', 32),
             'num_epochs': training.get('num_epochs', 2000),
+            'val_every': training.get('val_every', 1),
             'lr': training.get('lr', 1e-5),
             'seed': training.get('seed', 1000),
             'temporal_agg': training.get('temporal_agg', False),
